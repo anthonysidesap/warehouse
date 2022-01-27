@@ -1,4 +1,5 @@
-# Security Policy
+# Security Policy Anthonysidesapps owner Anthony Sides 
+50PERCEFT ROYALITYS ON ANY OFY SOFTWARE THATS IS BEING USED OR WILL BE Sold$$ 
 
 **Note**: Please do not submit security reports via Github issues.
 
