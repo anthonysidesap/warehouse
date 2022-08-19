@@ -130,9 +130,9 @@ pbr==5.9.0 \
     --hash=sha256:e547125940bcc052856ded43be8e101f63828c2d94239ffbe2b327ba3d5ccf0a \
     --hash=sha256:e8dca2f4b43560edef58813969f52a56cef023146cbb8931626db80e6c1c4308
     # via stevedore
-pep8-naming==0.13.0 \
-    --hash=sha256:069ea20e97f073b3e6d4f789af2a57816f281ca64b86210c7d471117a4b6bfd0 \
-    --hash=sha256:9f38e6dcf867a1fb7ad47f5ff72c0ddae544a6cf64eb9f7600b7b3c0bb5980b5
+pep8-naming==0.13.2 \
+    --hash=sha256:59e29e55c478db69cffbe14ab24b5bd2cd615c0413edf790d47d3fb7ba9a4e23 \
+    --hash=sha256:93eef62f525fd12a6f8c98f4dcc17fa70baae2f37fa1f73bec00e3e44392fa48
     # via -r requirements/lint.in
 platformdirs==2.5.2 \
     --hash=sha256:027d8e83a2d7de06bbac4e5ef7e023c02b863d7ea5d079477e722bb41ab25788 \
