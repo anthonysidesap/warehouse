@@ -41,9 +41,9 @@ botocore-stubs==1.25.1 \
     --hash=sha256:39b79b84b2e4c984097f1e62ce98d44f5223afd7f39746d0641c81159c8c2758 \
     --hash=sha256:8d6174df7a9a90289309f9651e08903147d6dfb25a762fa267240da9d85fc147
     # via boto3-stubs
-celery-types==0.13.0 \
-    --hash=sha256:28c7a5e024d541aaf501a2d2fc3b671c193b1993d0be0cc257188bdcadc5557a \
-    --hash=sha256:29beddabfc04878baae06bf1779d94e89d52b613b2baeae6ebb58cfd86e1c8f1
+celery-types==0.13.2 \
+    --hash=sha256:51b889d324f657c582220626daa23fefc614c465c83aa32f10e70ac74f1b3ebc \
+    --hash=sha256:9edf1bb25e45aa79e25911fee8549772fadb84e6857b05b764410758dc067f16
     # via -r requirements/lint.in
 click==8.1.3 \
     --hash=sha256:7682dc8afb30297001674575ea00d1814d808d6a36af415a82bd481d37ba7b8e \
