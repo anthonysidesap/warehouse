@@ -37,9 +37,9 @@ boto3-stubs==1.22.1 \
     --hash=sha256:397cb4afef355941f6e47b1c2ace947127f078ca28d7ef1841ddc99cddb18bc9 \
     --hash=sha256:5be0a65fbff2e75ddeecaa87f1532d2c0d2010d3ddecfae364756ead88d6d782
     # via types-boto3
-botocore-stubs==1.25.1 \
-    --hash=sha256:39b79b84b2e4c984097f1e62ce98d44f5223afd7f39746d0641c81159c8c2758 \
-    --hash=sha256:8d6174df7a9a90289309f9651e08903147d6dfb25a762fa267240da9d85fc147
+botocore-stubs==1.27.81 \
+    --hash=sha256:afd757186185134330cf6fa094dca8c28634ca20a9f9d8047b36860294313a98 \
+    --hash=sha256:f58a5a7a2aca8d384e5479003184845fc52483e981ecb1640424be75c9b81965
     # via boto3-stubs
 celery-types==0.13.0 \
     --hash=sha256:28c7a5e024d541aaf501a2d2fc3b671c193b1993d0be0cc257188bdcadc5557a \
@@ -167,6 +167,10 @@ tomli==2.0.1 \
     # via
     #   black
     #   mypy
+types-awscrt==0.14.6 \
+    --hash=sha256:f20f83420b5276966e91d94a5dbf8f66822524d9d9aba1c56be4783323ec6b56 \
+    --hash=sha256:f8b1bf874c2e38deb390fcadc1177df760eebe85116398a359c49423b70b1b64
+    # via botocore-stubs
 types-boto3==1.0.2 \
     --hash=sha256:15f3ffad0314e40a0708fec25f94891414f93260202422bf8b19b6913853c983 \
     --hash=sha256:a6a88e94d59d887839863a64095493956efc148e747206880a7eb47d90ae8398
@@ -291,5 +295,6 @@ setuptools==62.3.2 \
     --hash=sha256:68e45d17c9281ba25dc0104eadd2647172b3472d9e01f911efa57965e8d51a36 \
     --hash=sha256:a43bdedf853c670e5fed28e5623403bad2f73cf02f9a2774e91def6bda8265a7
     # via
+    #   zope-event
     #   zope-interface
     #   zope-schema
