@@ -359,9 +359,9 @@ google-api-core[grpc]==2.6.1 \
     #   google-cloud-bigquery
     #   google-cloud-core
     #   google-cloud-storage
-google-auth==2.6.6 \
-    --hash=sha256:1ba4938e032b73deb51e59c4656a00e0939cf0b1112575099f136babb4563312 \
-    --hash=sha256:349ac49b18b01019453cc99c11c92ed772739778c92f184002b7ab3a5b7ac77d
+google-auth==2.14.0 \
+    --hash=sha256:1ad5b0e6eba5f69645971abb3d2c197537d5914070a8c6d30299dfdb07c5c700 \
+    --hash=sha256:cf24817855d874ede2efd071aa22125445f555de1685b739a9782fcf408c2a3d
     # via
     #   google-api-core
     #   google-cloud-core
