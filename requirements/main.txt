@@ -1067,9 +1067,9 @@ pytz==2022.1 \
     # via
     #   babel
     #   celery
-readme-renderer[md]==35.0 \
-    --hash=sha256:73b84905d091c31f36e50b4ae05ae2acead661f6a09a9abb4df7d2ddcdb6a698 \
-    --hash=sha256:a727999acfc222fc21d82a12ed48c957c4989785e5865807c65a487d21677497
+readme-renderer[md]==37.3 \
+    --hash=sha256:cd653186dfc73055656f090f227f5cb22a046d7f71a841dfa305f55c9a513273 \
+    --hash=sha256:f67a16caedfa71eef48a31b39708637a6f4664c4394801a7b0d6432d13907343
     # via -r requirements/main.in
 redis==4.3.3 \
     --hash=sha256:2f7a57cf4af15cd543c4394bcbe2b9148db2606a37edba755368836e3a1d053e \
