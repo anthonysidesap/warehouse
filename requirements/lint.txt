@@ -33,9 +33,9 @@ black==22.3.0 \
     --hash=sha256:ee8f1f7228cce7dffc2b464f07ce769f478968bfb3dd1254a4c2eeed84928aad \
     --hash=sha256:fd57160949179ec517d32ac2ac898b5f20d68ed1a9c977346efbac9c2f1e779d
     # via -r requirements/lint.in
-boto3-stubs==1.22.1 \
-    --hash=sha256:397cb4afef355941f6e47b1c2ace947127f078ca28d7ef1841ddc99cddb18bc9 \
-    --hash=sha256:5be0a65fbff2e75ddeecaa87f1532d2c0d2010d3ddecfae364756ead88d6d782
+boto3-stubs==1.26.15 \
+    --hash=sha256:37cfc5d9bb92e411a000f2ef109b0577023d6da076104a6957ed7ca7f2cc6c04 \
+    --hash=sha256:d4365dcf57f569c82859c7ea30dcba4ae14e4d470c219823ddfd4d844a171637
     # via types-boto3
 botocore-stubs==1.25.1 \
     --hash=sha256:39b79b84b2e4c984097f1e62ce98d44f5223afd7f39746d0641c81159c8c2758 \
@@ -167,6 +167,10 @@ tomli==2.0.1 \
     # via
     #   black
     #   mypy
+types-awscrt==0.15.3 \
+    --hash=sha256:faa90585ef8f4e6e85fde17ad2c04604717a7978840416c92b7adddbf6fe5793 \
+    --hash=sha256:ff24dcbed0d1d27bc2565702af0a2ae5eb73223de87dfe3e4e1bf2eaf00a57ec
+    # via types-s3transfer
 types-boto3==1.0.2 \
     --hash=sha256:15f3ffad0314e40a0708fec25f94891414f93260202422bf8b19b6913853c983 \
     --hash=sha256:a6a88e94d59d887839863a64095493956efc148e747206880a7eb47d90ae8398
@@ -207,6 +211,10 @@ types-requests==2.27.30 \
     --hash=sha256:b9b6cd0a6e5d500e56419b79f44ec96f316e9375ff6c8ee566c39d25e9612621 \
     --hash=sha256:ca8d7cc549c3d10dbcb3c69c1b53e3ffd1270089c1001a65c1e9e1017eb5e704
     # via -r requirements/lint.in
+types-s3transfer==0.6.0.post5 \
+    --hash=sha256:2cf1e07cf4d1a5a2a68d89c654f45d9c3b678d39f7fe03a6f36903b6dbd3bcbc \
+    --hash=sha256:cfcbee11c16d60af3feb3dbffea3a85b32129235b562912dece310a45ae83a2c
+    # via boto3-stubs
 types-setuptools==57.4.17 \
     --hash=sha256:9c7cdaf0d55113e24ac17103bde2d434472abf1dbf444238e989fe4e798ffa26 \
     --hash=sha256:9d556fcaf6808a1cead4aaa41e5c07a61f0152a875811e1239738eba4e0b7b16
@@ -220,6 +228,7 @@ typing-extensions==4.1.1 \
     --hash=sha256:21c85e0fe4b9a155d0799430b0ad741cdce7e359660ccbd8b530613e8df88ce2
     # via
     #   boto3-stubs
+    #   botocore-stubs
     #   celery-types
     #   mypy
 zope-event==4.5.0 \
