@@ -199,9 +199,9 @@ types-pytz==2021.3.8 \
     --hash=sha256:41253a3a2bf028b6a3f17b58749a692d955af0f74e975de94f6f4d2d3cd01dbd \
     --hash=sha256:aef4a917ab28c585d3f474bfce4f4b44b91e95d9d47d4de29dd845e0db8e3910
     # via -r requirements/lint.in
-types-redis==4.2.6 \
-    --hash=sha256:1136af954ade0be33b487f440c8cbcbee29f089a83e685484ec91f363c6c69fe \
-    --hash=sha256:d6adc77185cf40b300816767a64c0ee9ee0b21dc174e8e5c23b7e83d43189cb8
+types-redis==4.4.0.0 \
+    --hash=sha256:7d826d458e9a6dbd7d4f21fdf6d7c39ba2e2f3474c8a348000241965860a0edf \
+    --hash=sha256:cc3832caab14f86af2c62ac3c865694df925df525b8083509035842ecb6b5950
     # via -r requirements/lint.in
 types-requests==2.27.30 \
     --hash=sha256:b9b6cd0a6e5d500e56419b79f44ec96f316e9375ff6c8ee566c39d25e9612621 \
