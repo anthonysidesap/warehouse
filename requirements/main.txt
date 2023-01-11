@@ -319,9 +319,7 @@ datadog==0.44.0 \
 deprecated==1.2.13 \
     --hash=sha256:43ac5335da90c31c24ba028af536a91d41d53f9e6901ddb021bcc572ce44e38d \
     --hash=sha256:64756e3e14c8c5eea9795d93c524551432a0be75629f8f29e67ab8caf076c76d
-    # via
-    #   limits
-    #   redis
+    # via limits
 disposable-email-domains==0.0.79 \
     --hash=sha256:575dc0247355b153f0b092b70bd49f26d89d4d0b3eb555eb6be7988213eed1e7 \
     --hash=sha256:893ebd1076581c30dd3c19e104f83f0866200a1e9efdb6e4824e98a0811cfe32
@@ -819,7 +817,6 @@ packaging==21.3 \
     #   -r requirements/main.in
     #   google-cloud-bigquery
     #   limits
-    #   redis
 paginate==0.5.6 \
     --hash=sha256:5e6007b6a9398177a7e1648d04fdd9f8c9766a1a945bceac82f1929e8c78af2d
     # via
@@ -1071,9 +1068,9 @@ readme-renderer[md]==35.0 \
     --hash=sha256:73b84905d091c31f36e50b4ae05ae2acead661f6a09a9abb4df7d2ddcdb6a698 \
     --hash=sha256:a727999acfc222fc21d82a12ed48c957c4989785e5865807c65a487d21677497
     # via -r requirements/main.in
-redis==4.3.3 \
-    --hash=sha256:2f7a57cf4af15cd543c4394bcbe2b9148db2606a37edba755368836e3a1d053e \
-    --hash=sha256:f57f8df5d238a8ecf92f499b6b21467bfee6c13d89953c27edf1e2bc673622e7
+redis==4.4.2 \
+    --hash=sha256:a010f6cb7378065040a02839c3f75c7e0fb37a87116fb4a95be82a95552776c7 \
+    --hash=sha256:e6206448e2f8a432871d07d432c13ed6c2abcf6b74edb436c99752b1371be387
     # via
     #   -r requirements/main.in
     #   celery-redbeat
@@ -1112,6 +1109,19 @@ sentry-sdk==1.5.12 \
     --hash=sha256:259535ba66933eacf85ab46524188c84dcb4c39f40348455ce15e2c0aca68863 \
     --hash=sha256:778b53f0a6c83b1ee43d3b7886318ba86d975e686cb2c7906ccc35b334360be1
     # via -r requirements/main.in
+setuptools==62.3.2 \
+    --hash=sha256:68e45d17c9281ba25dc0104eadd2647172b3472d9e01f911efa57965e8d51a36 \
+    --hash=sha256:a43bdedf853c670e5fed28e5623403bad2f73cf02f9a2774e91def6bda8265a7
+    # via
+    #   -r requirements/main.in
+    #   limits
+    #   pastedeploy
+    #   plaster
+    #   pyramid
+    #   repoze-sendmail
+    #   zope-deprecation
+    #   zope-interface
+    #   zope-sqlalchemy
 six==1.16.0 \
     --hash=sha256:1e61c37477a1626458e36f7b1d82aa5c9b094fa4802892072e49de9c60c4c926 \
     --hash=sha256:8abb2f1d86890a2dfb989f9a77cfcfd3e47c2a354b01111771326f8aa26e0254
@@ -1425,18 +1435,3 @@ zope-sqlalchemy==1.6 \
 zxcvbn==4.4.28 \
     --hash=sha256:151bd816817e645e9064c354b13544f85137ea3320ca3be1fb6873ea75ef7dc1
     # via -r requirements/main.in
-
-# The following packages are considered to be unsafe in a requirements file:
-setuptools==62.3.2 \
-    --hash=sha256:68e45d17c9281ba25dc0104eadd2647172b3472d9e01f911efa57965e8d51a36 \
-    --hash=sha256:a43bdedf853c670e5fed28e5623403bad2f73cf02f9a2774e91def6bda8265a7
-    # via
-    #   -r requirements/main.in
-    #   limits
-    #   pastedeploy
-    #   plaster
-    #   pyramid
-    #   repoze-sendmail
-    #   zope-deprecation
-    #   zope-interface
-    #   zope-sqlalchemy
