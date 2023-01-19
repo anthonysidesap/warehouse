@@ -153,6 +153,12 @@ pygments==2.12.0 \
 restructuredtext-lint==1.4.0 \
     --hash=sha256:1b235c0c922341ab6c530390892eb9e92f90b9b75046063e047cacfb0f050c45
     # via doc8
+setuptools==62.3.2 \
+    --hash=sha256:68e45d17c9281ba25dc0104eadd2647172b3472d9e01f911efa57965e8d51a36 \
+    --hash=sha256:a43bdedf853c670e5fed28e5623403bad2f73cf02f9a2774e91def6bda8265a7
+    # via
+    #   zope-interface
+    #   zope-schema
 stevedore==3.5.0 \
     --hash=sha256:a547de73308fd7e90075bb4d301405bebf705292fa90a90fc3bcf9133f58616c \
     --hash=sha256:f40253887d8712eaa2bb0ea3830374416736dc8ec0e22f5a65092c1174c44335
@@ -203,9 +209,9 @@ types-redis==4.2.6 \
     --hash=sha256:1136af954ade0be33b487f440c8cbcbee29f089a83e685484ec91f363c6c69fe \
     --hash=sha256:d6adc77185cf40b300816767a64c0ee9ee0b21dc174e8e5c23b7e83d43189cb8
     # via -r requirements/lint.in
-types-requests==2.27.30 \
-    --hash=sha256:b9b6cd0a6e5d500e56419b79f44ec96f316e9375ff6c8ee566c39d25e9612621 \
-    --hash=sha256:ca8d7cc549c3d10dbcb3c69c1b53e3ffd1270089c1001a65c1e9e1017eb5e704
+types-requests==2.28.11.8 \
+    --hash=sha256:61960554baca0008ae7e2db2bd3b322ca9a144d3e80ce270f5fb640817e40994 \
+    --hash=sha256:e67424525f84adfbeab7268a159d3c633862dafae15c5b19547ce1b55954f0a3
     # via -r requirements/lint.in
 types-setuptools==57.4.17 \
     --hash=sha256:9c7cdaf0d55113e24ac17103bde2d434472abf1dbf444238e989fe4e798ffa26 \
@@ -285,11 +291,3 @@ zope-schema==6.2.0 \
     --hash=sha256:03150d8670549590b45109e06b7b964f4e751fa9cb5297ec4985c3bc38641b07 \
     --hash=sha256:2201aef8ad75ee5a881284d7a6acd384661d6dca7bde5e80a22839a77124595b
     # via mypy-zope
-
-# The following packages are considered to be unsafe in a requirements file:
-setuptools==62.3.2 \
-    --hash=sha256:68e45d17c9281ba25dc0104eadd2647172b3472d9e01f911efa57965e8d51a36 \
-    --hash=sha256:a43bdedf853c670e5fed28e5623403bad2f73cf02f9a2774e91def6bda8265a7
-    # via
-    #   zope-interface
-    #   zope-schema
