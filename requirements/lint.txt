@@ -120,9 +120,9 @@ parsy==1.1.0 \
     --hash=sha256:25bd5cea2954950ebbfdf71f8bdaf7fd45a5df5325fd36a1064be2204d9d4c94 \
     --hash=sha256:36173ba01a5372c7a1b32352cc73a279a49198f52252adf1c8c1ed41d1f94e8d
     # via curlylint
-pathspec==0.9.0 \
-    --hash=sha256:7d15c4ddb0b5c802d161efc417ec1a2558ea2653c2e8ad9c19098201dc1c993a \
-    --hash=sha256:e564499435a2673d586f6b2130bb5b95f04a3ba06f81b8f895b651a3c76aabb1
+pathspec==0.11.0 \
+    --hash=sha256:3a66eb970cbac598f9e5ccb5b2cf58930cd8e3ed86d393d541eaf2d8b1705229 \
+    --hash=sha256:64d338d4e0914e91c1792321e6907b5a593f1ab1851de7fc269557a21b30ebbc
     # via
     #   black
     #   curlylint
@@ -153,6 +153,12 @@ pygments==2.12.0 \
 restructuredtext-lint==1.4.0 \
     --hash=sha256:1b235c0c922341ab6c530390892eb9e92f90b9b75046063e047cacfb0f050c45
     # via doc8
+setuptools==62.3.2 \
+    --hash=sha256:68e45d17c9281ba25dc0104eadd2647172b3472d9e01f911efa57965e8d51a36 \
+    --hash=sha256:a43bdedf853c670e5fed28e5623403bad2f73cf02f9a2774e91def6bda8265a7
+    # via
+    #   zope-interface
+    #   zope-schema
 stevedore==3.5.0 \
     --hash=sha256:a547de73308fd7e90075bb4d301405bebf705292fa90a90fc3bcf9133f58616c \
     --hash=sha256:f40253887d8712eaa2bb0ea3830374416736dc8ec0e22f5a65092c1174c44335
@@ -285,11 +291,3 @@ zope-schema==6.2.0 \
     --hash=sha256:03150d8670549590b45109e06b7b964f4e751fa9cb5297ec4985c3bc38641b07 \
     --hash=sha256:2201aef8ad75ee5a881284d7a6acd384661d6dca7bde5e80a22839a77124595b
     # via mypy-zope
-
-# The following packages are considered to be unsafe in a requirements file:
-setuptools==62.3.2 \
-    --hash=sha256:68e45d17c9281ba25dc0104eadd2647172b3472d9e01f911efa57965e8d51a36 \
-    --hash=sha256:a43bdedf853c670e5fed28e5623403bad2f73cf02f9a2774e91def6bda8265a7
-    # via
-    #   zope-interface
-    #   zope-schema
