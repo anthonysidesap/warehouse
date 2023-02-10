@@ -153,9 +153,9 @@ pygments==2.12.0 \
 restructuredtext-lint==1.4.0 \
     --hash=sha256:1b235c0c922341ab6c530390892eb9e92f90b9b75046063e047cacfb0f050c45
     # via doc8
-stevedore==3.5.0 \
-    --hash=sha256:a547de73308fd7e90075bb4d301405bebf705292fa90a90fc3bcf9133f58616c \
-    --hash=sha256:f40253887d8712eaa2bb0ea3830374416736dc8ec0e22f5a65092c1174c44335
+stevedore==5.0.0 \
+    --hash=sha256:2c428d2338976279e8eb2196f7a94910960d9f7ba2f41f3988511e95ca447021 \
+    --hash=sha256:bd5a71ff5e5e5f5ea983880e4a1dd1bb47f8feebbb3d95b592398e2f02194771
     # via doc8
 toml==0.10.2 \
     --hash=sha256:806143ae5bfb6a3c6e736a764057db0e6a0e05e338b5630894a5f779cabb4f9b \
