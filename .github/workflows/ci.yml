@@ -96,7 +96,7 @@ jobs:
           node-version: 14.15.5
       - name: Cache Node dependencies
         if: ${{ matrix.needs-node }}
-        uses: actions/cache@v2
+        uses: actions/cache@v3
         env:
           cache-name: warehouse-cache-npm
         with:
