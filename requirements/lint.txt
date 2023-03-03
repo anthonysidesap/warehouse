@@ -134,9 +134,9 @@ pep8-naming==0.13.0 \
     --hash=sha256:069ea20e97f073b3e6d4f789af2a57816f281ca64b86210c7d471117a4b6bfd0 \
     --hash=sha256:9f38e6dcf867a1fb7ad47f5ff72c0ddae544a6cf64eb9f7600b7b3c0bb5980b5
     # via -r requirements/lint.in
-platformdirs==2.5.2 \
-    --hash=sha256:027d8e83a2d7de06bbac4e5ef7e023c02b863d7ea5d079477e722bb41ab25788 \
-    --hash=sha256:58c8abb07dcb441e6ee4b11d8df0ac856038f944ab98b7be6b27b2a3c7feef19
+platformdirs==3.1.0 \
+    --hash=sha256:13b08a53ed71021350c9e300d4ea8668438fb0046ab3937ac9a29913a1a1350a \
+    --hash=sha256:accc3665857288317f32c7bebb5a8e482ba717b474f3fc1d18ca7f9214be0cef
     # via black
 pycodestyle==2.8.0 \
     --hash=sha256:720f8b39dde8b293825e7ff02c475f3077124006db4f440dcbc9a20b76548a20 \
