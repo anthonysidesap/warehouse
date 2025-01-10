@@ -28,6 +28,7 @@ def includeme(config):
     # Basic global routes
     config.add_route("index", "/", domain=warehouse)
     config.add_route("locale", "/locale/", domain=warehouse)
+    config.add_route("favicon.ico", "/favicon.ico", domain=warehouse)
     config.add_route("robots.txt", "/robots.txt", domain=warehouse)
     config.add_route("opensearch.xml", "/opensearch.xml", domain=warehouse)
     config.add_route("index.sitemap.xml", "/sitemap.xml", domain=warehouse)
@@ -56,7 +57,21 @@ def includeme(config):
     )
 
     # Our legal policies
-    config.add_policy("terms-of-use", "terms.md")
+    _domain_prefix = rf"https?://({warehouse}|localhost)"
+    config.add_redirect_rule(
+        f"{_domain_prefix}/policy/terms-of-use/",
+        "https://policies.python.org/pypi.org/Terms-of-Use/",
+    )
+    config.add_redirect_rule(
+        f"{_domain_prefix}/policy/acceptable-use-policy/",
+        "https://policies.python.org/pypi.org/Acceptable-Use-Policy/",
+    )
+    config.add_template_view(
+        "trademarks",
+        "/trademarks/",
+        "pages/trademarks.html",
+        view_kw={"has_translations": True},
+    )
 
     # HTML Snippets for including into other pages.
     config.add_route(
@@ -108,6 +123,18 @@ def includeme(config):
     config.add_route(
         "includes.administer-project-include",
         "/_includes/administer-project-include/{project_name}",
+        domain=warehouse,
+    )
+    config.add_route(
+        "includes.administer-user-include",
+        "/_includes/administer-user-include/{user_name}",
+        factory="warehouse.accounts.models:UserFactory",
+        traverse="/{user_name}",
+        domain=warehouse,
+    )
+    config.add_route(
+        "includes.submit_malware_report",
+        "/_includes/submit-malware-report/{project_name}",
         factory="warehouse.packaging.models:ProjectFactory",
         traverse="/{project_name}",
         domain=warehouse,
@@ -125,6 +152,11 @@ def includeme(config):
         "stats.json", "/stats/", accept="application/json", domain=warehouse
     )
 
+    # Security key giveaway
+    config.add_route(
+        "security-key-giveaway", "/security-key-giveaway/", domain=warehouse
+    )
+
     # Accounts
     config.add_redirect("/u/{username}/", "/user/{username}/", domain=warehouse)
     config.add_route(
@@ -132,6 +164,14 @@ def includeme(config):
         "/user/{username}/",
         factory="warehouse.accounts.models:UserFactory",
         traverse="/{username}",
+        domain=warehouse,
+    )
+    config.add_route("accounts.search", "/accounts/search/", domain=warehouse)
+    config.add_route(
+        "organizations.profile",
+        "/org/{organization}/",
+        factory="warehouse.organizations.models:OrganizationFactory",
+        traverse="/{organization}",
         domain=warehouse,
     )
     config.add_route("accounts.login", "/account/login/", domain=warehouse)
@@ -175,11 +215,19 @@ def includeme(config):
         "/account/verify-project-role/",
         domain=warehouse,
     )
+
     # Management (views for logged-in users)
+    config.add_route(
+        "manage.unverified-account", "/manage/unverified-account/", domain=warehouse
+    )
     config.add_route("manage.account", "/manage/account/", domain=warehouse)
+    config.add_route(
+        "manage.account.publishing", "/manage/account/publishing/", domain=warehouse
+    )
     config.add_route(
         "manage.account.two-factor", "/manage/account/two-factor/", domain=warehouse
     )
+    config.add_redirect("/2fa/", "/manage/account/two-factor/", domain=warehouse)
     config.add_route(
         "manage.account.totp-provision",
         "/manage/account/totp-provision",
@@ -235,6 +283,34 @@ def includeme(config):
         domain=warehouse,
     )
     config.add_route(
+        "manage.organization.activate_subscription",
+        "/manage/organization/{organization_name}/subscription/activate/",
+        factory="warehouse.organizations.models:OrganizationFactory",
+        traverse="/{organization_name}",
+        domain=warehouse,
+    )
+    config.add_route(
+        "manage.organization.subscription",
+        "/manage/organization/{organization_name}/subscription/",
+        factory="warehouse.organizations.models:OrganizationFactory",
+        traverse="/{organization_name}",
+        domain=warehouse,
+    )
+    config.add_route(
+        "manage.organization.projects",
+        "/manage/organization/{organization_name}/projects/",
+        factory="warehouse.organizations.models:OrganizationFactory",
+        traverse="/{organization_name}",
+        domain=warehouse,
+    )
+    config.add_route(
+        "manage.organization.teams",
+        "/manage/organization/{organization_name}/teams/",
+        factory="warehouse.organizations.models:OrganizationFactory",
+        traverse="/{organization_name}",
+        domain=warehouse,
+    )
+    config.add_route(
         "manage.organization.roles",
         "/manage/organization/{organization_name}/people/",
         factory="warehouse.organizations.models:OrganizationFactory",
@@ -244,6 +320,13 @@ def includeme(config):
     config.add_route(
         "manage.organization.revoke_invite",
         "/manage/organization/{organization_name}/people/revoke_invite/",
+        factory="warehouse.organizations.models:OrganizationFactory",
+        traverse="/{organization_name}",
+        domain=warehouse,
+    )
+    config.add_route(
+        "manage.organization.resend_invite",
+        "/manage/organization/{organization_name}/people/resend_invite/",
         factory="warehouse.organizations.models:OrganizationFactory",
         traverse="/{organization_name}",
         domain=warehouse,
@@ -262,6 +345,48 @@ def includeme(config):
         traverse="/{organization_name}",
         domain=warehouse,
     )
+    config.add_route(
+        "manage.organization.history",
+        "/manage/organization/{organization_name}/history/",
+        factory="warehouse.organizations.models:OrganizationFactory",
+        traverse="/{organization_name}",
+        domain=warehouse,
+    )
+    config.add_route(
+        "manage.team.settings",
+        "/manage/organization/{organization_name}/team/{team_name}/settings/",
+        factory="warehouse.organizations.models:TeamFactory",
+        traverse="/{organization_name}/{team_name}",
+        domain=warehouse,
+    )
+    config.add_route(
+        "manage.team.projects",
+        "/manage/organization/{organization_name}/team/{team_name}/projects/",
+        factory="warehouse.organizations.models:TeamFactory",
+        traverse="/{organization_name}/{team_name}",
+        domain=warehouse,
+    )
+    config.add_route(
+        "manage.team.roles",
+        "/manage/organization/{organization_name}/team/{team_name}/members/",
+        factory="warehouse.organizations.models:TeamFactory",
+        traverse="/{organization_name}/{team_name}",
+        domain=warehouse,
+    )
+    config.add_route(
+        "manage.team.delete_role",
+        "/manage/organization/{organization_name}/team/{team_name}/members/delete/",
+        factory="warehouse.organizations.models:TeamFactory",
+        traverse="/{organization_name}/{team_name}",
+        domain=warehouse,
+    )
+    config.add_route(
+        "manage.team.history",
+        "/manage/organization/{organization_name}/team/{team_name}/history/",
+        factory="warehouse.organizations.models:TeamFactory",
+        traverse="/{organization_name}/{team_name}",
+        domain=warehouse,
+    )
     config.add_route("manage.projects", "/manage/projects/", domain=warehouse)
     config.add_route(
         "manage.project.settings",
@@ -273,6 +398,20 @@ def includeme(config):
     config.add_route(
         "manage.project.settings.publishing",
         "/manage/project/{project_name}/settings/publishing/",
+        factory="warehouse.packaging.models:ProjectFactory",
+        traverse="/{project_name}",
+        domain=warehouse,
+    )
+    config.add_route(
+        "manage.project.remove_organization_project",
+        "/manage/project/{project_name}/remove_organization_project/",
+        factory="warehouse.packaging.models:ProjectFactory",
+        traverse="/{project_name}",
+        domain=warehouse,
+    )
+    config.add_route(
+        "manage.project.transfer_organization_project",
+        "/manage/project/{project_name}/transfer_organization_project/",
         factory="warehouse.packaging.models:ProjectFactory",
         traverse="/{project_name}",
         domain=warehouse,
@@ -334,6 +473,20 @@ def includeme(config):
         domain=warehouse,
     )
     config.add_route(
+        "manage.project.change_team_project_role",
+        "/manage/project/{project_name}/collaboration/change_team/",
+        factory="warehouse.packaging.models:ProjectFactory",
+        traverse="/{project_name}",
+        domain=warehouse,
+    )
+    config.add_route(
+        "manage.project.delete_team_project_role",
+        "/manage/project/{project_name}/collaboration/delete_team/",
+        factory="warehouse.packaging.models:ProjectFactory",
+        traverse="/{project_name}",
+        domain=warehouse,
+    )
+    config.add_route(
         "manage.project.documentation",
         "/manage/project/{project_name}/documentation/",
         factory="warehouse.packaging.models:ProjectFactory",
@@ -347,19 +500,19 @@ def includeme(config):
         traverse="/{project_name}",
         domain=warehouse,
     )
-    config.add_route(
-        "manage.project.journal",
-        "/manage/project/{project_name}/journal/",
-        factory="warehouse.packaging.models:ProjectFactory",
-        traverse="/{project_name}",
-        domain=warehouse,
-    )
 
     # Packaging
     config.add_redirect("/p/{name}/", "/project/{name}/", domain=warehouse)
     config.add_route(
         "packaging.project",
         "/project/{name}/",
+        factory="warehouse.packaging.models:ProjectFactory",
+        traverse="/{name}",
+        domain=warehouse,
+    )
+    config.add_route(
+        "packaging.project.submit_malware_observation",
+        "/project/{name}/submit-malware-report/",
         factory="warehouse.packaging.models:ProjectFactory",
         traverse="/{name}",
         domain=warehouse,
@@ -384,65 +537,106 @@ def includeme(config):
         "/rss/project/{name}/releases.xml",
         factory="warehouse.packaging.models:ProjectFactory",
         traverse="/{name}/",
-        read_only=True,
         domain=warehouse,
     )
-    # Integration URLs
 
+    # Integration URLs
     config.add_route(
-        "integrations.github.disclose-token",
+        "integrations.secrets.disclose-token",
+        "/_/secrets/disclose-token",
+        domain=warehouse,
+    )
+    config.add_route(
+        "integrations.github.disclose-token",  # For backwards compatiblity
         "/_/github/disclose-token",
         domain=warehouse,
     )
-
     config.add_route(
         "integrations.vulnerabilities.osv.report",
         "/_/vulnerabilities/osv/report",
         domain=warehouse,
     )
 
-    # Legacy URLs
-    config.add_route("legacy.api.simple.index", "/simple/", domain=warehouse)
+    # API URLs
+    config.add_route("api.billing.webhook", "/billing/webhook/", domain=warehouse)
+    config.add_route("api.simple.index", "/simple/", domain=warehouse)
     config.add_route(
-        "legacy.api.simple.detail",
+        "api.simple.detail",
         "/simple/{name}/",
         factory="warehouse.packaging.models:ProjectFactory",
         traverse="/{name}/",
-        read_only=True,
         domain=warehouse,
     )
 
     config.add_route(
-        "legacy.api.json.project",
-        "/pypi/{name}/json",
+        "api.echo",
+        "/danger-api/echo",
+        domain=warehouse,
+    )
+    config.add_route(
+        "api.projects.observations",
+        "/danger-api/projects/{name}/observations",
         factory="warehouse.packaging.models:ProjectFactory",
         traverse="/{name}",
-        read_only=True,
+        domain=warehouse,
+    )
+
+    # PEP 740 URLs
+    config.add_route(
+        "integrity.provenance",
+        "/integrity/{project_name}/{release}/{filename}/provenance",
+        factory="warehouse.packaging.models:ProjectFactory",
+        traverse="/{project_name}/{release}/{filename}",
+        domain=warehouse,
+    )
+
+    # Mock URLs
+    config.add_route(
+        "mock.billing.checkout-session",
+        "/mock/billing/{organization_name}/checkout/",
+        factory="warehouse.organizations.models:OrganizationFactory",
+        traverse="/{organization_name}",
+        domain=warehouse,
+    )
+    config.add_route(
+        "mock.billing.portal-session",
+        "/mock/billing/{organization_name}/portal/",
+        factory="warehouse.organizations.models:OrganizationFactory",
+        traverse="/{organization_name}",
+        domain=warehouse,
+    )
+    config.add_route(
+        "mock.billing.trigger-checkout-session-completed",
+        "/mock/billing/{organization_name}/checkout/completed/",
+        factory="warehouse.organizations.models:OrganizationFactory",
+        traverse="/{organization_name}",
+        domain=warehouse,
+    )
+
+    # Legacy URLs
+    config.add_route(
+        "legacy.api.json.project",
+        "/pypi/{name}/json",
+        factory="warehouse.legacy.api.json.latest_release_factory",
         domain=warehouse,
     )
     config.add_route(
         "legacy.api.json.project_slash",
         "/pypi/{name}/json/",
-        factory="warehouse.packaging.models:ProjectFactory",
-        traverse="/{name}",
-        read_only=True,
+        factory="warehouse.legacy.api.json.latest_release_factory",
         domain=warehouse,
     )
 
     config.add_route(
         "legacy.api.json.release",
         "/pypi/{name}/{version}/json",
-        factory="warehouse.packaging.models:ProjectFactory",
-        traverse="/{name}/{version}",
-        read_only=True,
+        factory="warehouse.legacy.api.json.release_factory",
         domain=warehouse,
     )
     config.add_route(
         "legacy.api.json.release_slash",
         "/pypi/{name}/{version}/json/",
-        factory="warehouse.packaging.models:ProjectFactory",
-        traverse="/{name}/{version}",
-        read_only=True,
+        factory="warehouse.legacy.api.json.release_factory",
         domain=warehouse,
     )
 
@@ -470,13 +664,16 @@ def includeme(config):
 
     # Legacy XMLRPC
     config.add_xmlrpc_endpoint(
-        "pypi", pattern="/pypi", header="Content-Type:text/xml", domain=warehouse
+        "xmlrpc.pypi", pattern="/pypi", header="Content-Type:text/xml", domain=warehouse
     )
     config.add_xmlrpc_endpoint(
-        "pypi_slash", pattern="/pypi/", header="Content-Type:text/xml", domain=warehouse
+        "xmlrpc.pypi_slash",
+        pattern="/pypi/",
+        header="Content-Type:text/xml",
+        domain=warehouse,
     )
     config.add_xmlrpc_endpoint(
-        "RPC2", pattern="/RPC2", header="Content-Type:text/xml", domain=warehouse
+        "xmlrpc.RPC2", pattern="/RPC2", header="Content-Type:text/xml", domain=warehouse
     )
 
     # Legacy Documentation

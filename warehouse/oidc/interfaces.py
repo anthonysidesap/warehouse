@@ -10,41 +10,52 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, NewType
 
 from zope.interface import Interface
 
 from warehouse.rate_limiting.interfaces import RateLimiterException
 
+if TYPE_CHECKING:
+    from warehouse.oidc.models import PendingOIDCPublisher
+    from warehouse.packaging.models import Project
 
-class IOIDCProviderService(Interface):
-    def get_key(key_id):
+SignedClaims = NewType("SignedClaims", dict[str, Any])
+
+
+class IOIDCPublisherService(Interface):
+    def verify_jwt_signature(unverified_token: str):
         """
-        Return the JWK identified by the given KID,
-        fetching it if not already cached locally.
+        Verify the given JWT's signature, returning its signed claims if
+        valid. If the signature is invalid, `None` is returned.
 
-        Returns None if the JWK does not exist or the access pattern is
-        invalid (i.e., exceeds our internal limit on JWK requests to
-        each provider).
+        This method does **not** verify the claim set itself -- the API
+        consumer is responsible for evaluating the claim set.
         """
         pass
 
-    def verify_signature_only(token):
+    def find_publisher(signed_claims: SignedClaims, *, pending: bool = False):
         """
-        Verify the given JWT's signature and basic claims, returning
-        the decoded JWT, or `None` if invalid.
+        Given a mapping of signed claims produced by `verify_jwt_signature`,
+        attempt to find and return either a `OIDCPublisher` or `PendingOIDCPublisher`
+        that matches them, depending on the value of `pending`.
 
-        This function **does not** verify the token's suitability
-        for a particular action; subsequent checks on the decoded token's
-        third party claims must be done to ensure that.
+        If no publisher matches the claims, `None` is returned.
         """
+        pass
 
-    def verify_for_project(token, project):
+    def reify_pending_publisher(
+        pending_publisher: PendingOIDCPublisher, project: Project
+    ):
         """
-        Verify the given JWT's signature and basic claims in the same
-        manner as `verify_signature_only`, but *also* verify that the JWT's
-        claims are consistent with at least one of the project's registered
-        OIDC providers.
+        Reify the given pending `PendingOIDCPublisher` into an `OIDCPublisher`,
+        adding it to the given project (presumed newly created) in the process.
+
+        Returns the reified publisher.
         """
+        pass
 
 
 class TooManyOIDCRegistrations(RateLimiterException):

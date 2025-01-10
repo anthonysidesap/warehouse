@@ -10,7 +10,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import enum
+
 from zope.interface import Interface
+
+from warehouse.rate_limiting.interfaces import RateLimiterException
+
+
+class TooManyProjectsCreated(RateLimiterException):
+    pass
 
 
 class IGenericFileStorage(Interface):
@@ -20,13 +28,25 @@ class IGenericFileStorage(Interface):
         created for, passing a name for settings.
         """
 
-    def get(path):
+    def get(path: str):
         """
         Return a file like object that can be read to access the file located
         at the given path.
         """
 
-    def store(path, file_path, *, meta=None):
+    def get_metadata(path: str):
+        """
+        Return a dictionary containing any user-created metadata associated
+        with the file at a given path. Implementations may or may not store
+        or provide such metadata.
+        """
+
+    def get_checksum(path: str):
+        """
+        Return the md5 digest of the file at a given path as a lowercase string.
+        """
+
+    def store(path: str, file_path, *, meta=None):
         """
         Save the file located at file_path to the file storage at the location
         specified by path. An additional meta keyword argument may contain
@@ -52,4 +72,27 @@ class IDocsStorage(Interface):
     def remove_by_prefix(prefix):
         """
         Remove all files matching the given prefix.
+        """
+
+
+class ProjectNameUnavailableReason(enum.Enum):
+    Invalid = "invalid"
+    Stdlib = "stdlib"
+    AlreadyExists = "already-exists"
+    Prohibited = "prohibited"
+    TooSimilar = "too-similar"
+
+
+class IProjectService(Interface):
+    def check_project_name(name):
+        """
+        Check if a project name is valid and available for use.
+        """
+
+    def create_project(name, creator, request, *, creator_is_owner=True):
+        """
+        Creates a new project, recording a user as its creator.
+
+        If `creator_is_owner`, a `Role` is also added to the project
+        marking `creator` as a project owner.
         """

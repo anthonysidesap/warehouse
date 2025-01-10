@@ -78,10 +78,14 @@ class IUserService(Interface):
         if there is no user with that email.
         """
 
-    def get_admins():
+    def get_users_by_prefix(prefix: str) -> list:
         """
-        Return a list of user objects corresponding with admin users, or []
-        if there is no admin users.
+        Return a list of user objects that match the given prefix.
+        """
+
+    def get_admin_user():
+        """
+        Returns the `admin` user object.
         """
 
     def find_userid(username):
@@ -117,7 +121,7 @@ class IUserService(Interface):
         Updates the user object
         """
 
-    def disable_password(user_id, reason=None):
+    def disable_password(user_id, request, reason=None):
         """
         Disables the given user's password, preventing further login until the user
         resets their password. If a reason was given, this will be persisted and reset
@@ -224,14 +228,6 @@ class IUserService(Interface):
         or None of the user doesn't have a credential with this ID.
         """
 
-    def record_event(user_id, *, tag, additional=None):
-        """
-        Creates a new UserEvent for the given user with the given
-        tag, IP address, and additional metadata.
-
-        Returns the event.
-        """
-
     def generate_recovery_codes(user_id):
         """
         Generates RecoveryCode objects for the given user.
@@ -265,6 +261,11 @@ class ITokenService(Interface):
         Gets the data corresponding to the token provided
         """
 
+    def unsafe_load_payload(token):
+        """
+        Gets the data corresponding to the token provided *regardless of validity*
+        """
+
 
 class IPasswordBreachedService(Interface):
     failure_message = Attribute("The message to describe the failure that occurred")
@@ -279,4 +280,11 @@ class IPasswordBreachedService(Interface):
 
         May have an optional list of tags, which allows identifying the purpose of
         checking the password.
+        """
+
+
+class IEmailBreachedService(Interface):
+    def get_email_breach_count(email: str) -> int | None:
+        """
+        Returns count of times the email appears in verified breaches.
         """

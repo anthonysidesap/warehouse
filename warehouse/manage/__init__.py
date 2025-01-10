@@ -42,6 +42,7 @@ def reauth_view(view, info):
                     username=request.user.username,
                     next_route=request.matched_route.name,
                     next_route_matchdict=json.dumps(request.matchdict),
+                    next_route_query=json.dumps(request.GET.mixed()),
                     user_service=user_service,
                 )
 
@@ -70,7 +71,7 @@ def includeme(config):
     config.register_service_factory(
         RateLimit(user_oidc_registration_ratelimit_string),
         IRateLimiter,
-        name="user_oidc.provider.register",
+        name="user_oidc.publisher.register",
     )
 
     ip_oidc_registration_ratelimit_string = config.registry.settings.get(
@@ -79,5 +80,5 @@ def includeme(config):
     config.register_service_factory(
         RateLimit(ip_oidc_registration_ratelimit_string),
         IRateLimiter,
-        name="ip_oidc.provider.register",
+        name="ip_oidc.publisher.register",
     )

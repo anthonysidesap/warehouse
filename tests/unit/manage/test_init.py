@@ -21,7 +21,7 @@ class TestReAuthView:
         assert set(manage.reauth_view.options) == {"require_reauth"}
 
     @pytest.mark.parametrize(
-        "require_reauth, needs_reauth_calls",
+        ("require_reauth", "needs_reauth_calls"),
         [
             (True, [pretend.call(manage.DEFAULT_TIME_TO_REAUTH)]),
             (666, [pretend.call(666)]),
@@ -52,7 +52,7 @@ class TestReAuthView:
         assert request.session.needs_reauthentication.calls == needs_reauth_calls
 
     @pytest.mark.parametrize(
-        "require_reauth, needs_reauth_calls",
+        ("require_reauth", "needs_reauth_calls"),
         [
             (True, [pretend.call(manage.DEFAULT_TIME_TO_REAUTH)]),
             (666, [pretend.call(666)]),
@@ -69,6 +69,7 @@ class TestReAuthView:
             user=pretend.stub(username=pretend.stub()),
             matched_route=pretend.stub(name=pretend.stub()),
             matchdict={"foo": "bar"},
+            GET=pretend.stub(mixed=lambda: {"baz": "bar"}),
         )
         response = pretend.stub()
 
@@ -120,9 +121,11 @@ def test_includeme(monkeypatch):
     ]
     assert config.register_service_factory.calls == [
         pretend.call(
-            "10 per day", rate_limit_iface, name="user_oidc.provider.register"
+            "10 per day", rate_limit_iface, name="user_oidc.publisher.register"
         ),
-        pretend.call("100 per day", rate_limit_iface, name="ip_oidc.provider.register"),
+        pretend.call(
+            "100 per day", rate_limit_iface, name="ip_oidc.publisher.register"
+        ),
     ]
     assert config.registry.settings.get.calls == [
         pretend.call("warehouse.manage.oidc.user_registration_ratelimit_string"),

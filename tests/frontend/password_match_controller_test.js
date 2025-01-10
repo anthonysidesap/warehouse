@@ -14,17 +14,17 @@
 /* global expect, beforeEach, describe, it */
 
 import { getByPlaceholderText, fireEvent } from "@testing-library/dom";
-import { Application } from "stimulus";
+import { Application } from "@hotwired/stimulus";
 import PasswordMatchController from "../../warehouse/static/js/warehouse/controllers/password_match_controller";
 
 describe("Password match controller", () => {
   beforeEach(() => {
     document.body.innerHTML = `
   <div data-controller="password-match">
-    <input id="password" data-target="password-match.passwordMatch" placeholder="Your password" type="password" data-action="input->password-match#checkPasswordsMatch" />
-    <input id="confirm" data-target="password-match.passwordMatch" placeholder="Confirm password" type="password" data-action="input->password-match#checkPasswordsMatch" />
-    <p data-target="password-match.matchMessage" class="hidden"></p>
-    <input type="submit" data-target="password-match.submit">
+    <input id="password" data-password-match-target="passwordMatch" placeholder="Your password" type="password" data-action="input->password-match#checkPasswordsMatch" />
+    <input id="confirm" data-password-match-target="passwordMatch" placeholder="Confirm password" type="password" data-action="input->password-match#checkPasswordsMatch" />
+    <p data-password-match-target="matchMessage" class="hidden"></p>
+    <input type="submit" data-password-match-target="submit">
   </div>
     `;
 

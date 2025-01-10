@@ -10,26 +10,36 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import distutils.util
+import base64
 import enum
+import functools
+import json
 import os
+import secrets
 import shlex
 
+from datetime import timedelta
+from urllib.parse import urlparse, urlunparse
+
+import orjson
+import platformdirs
 import transaction
 
 from pyramid import renderers
 from pyramid.authorization import Allow, Authenticated
 from pyramid.config import Configurator as _Configurator
-from pyramid.response import Response
+from pyramid.exceptions import HTTPForbidden
+from pyramid.httpexceptions import HTTPBadRequest
 from pyramid.tweens import EXCVIEW
 from pyramid_rpc.xmlrpc import XMLRPCRenderer
 
-from warehouse.errors import BasicAuthBreachedPassword, BasicAuthFailedPassword
+from warehouse.authnz import Permissions
+from warehouse.constants import MAX_FILESIZE, MAX_PROJECT_SIZE, ONE_GIB, ONE_MIB
 from warehouse.utils.static import ManifestCacheBuster
 from warehouse.utils.wsgi import ProxyFixer, VhmRootRemover
 
 
-class Environment(enum.Enum):
+class Environment(str, enum.Enum):
     production = "production"
     development = "development"
 
@@ -52,16 +62,133 @@ class Configurator(_Configurator):
 
 
 class RootFactory:
-
     __parent__ = None
     __name__ = None
 
     __acl__ = [
-        (Allow, "group:admins", "admin"),
-        (Allow, "group:moderators", "moderator"),
-        (Allow, "group:psf_staff", "psf_staff"),
-        (Allow, "group:with_admin_dashboard_access", "admin_dashboard_access"),
-        (Allow, Authenticated, "manage:user"),
+        (
+            Allow,
+            "group:admins",
+            (
+                Permissions.AdminBannerRead,
+                Permissions.AdminBannerWrite,
+                Permissions.AdminDashboardRead,
+                Permissions.AdminDashboardSidebarRead,
+                Permissions.AdminEmailsRead,
+                Permissions.AdminEmailsWrite,
+                Permissions.AdminFlagsRead,
+                Permissions.AdminFlagsWrite,
+                Permissions.AdminIpAddressesRead,
+                Permissions.AdminJournalRead,
+                Permissions.AdminMacaroonsRead,
+                Permissions.AdminMacaroonsWrite,
+                Permissions.AdminObservationsRead,
+                Permissions.AdminObservationsWrite,
+                Permissions.AdminOrganizationsRead,
+                Permissions.AdminOrganizationsWrite,
+                Permissions.AdminProhibitedEmailDomainsRead,
+                Permissions.AdminProhibitedEmailDomainsWrite,
+                Permissions.AdminProhibitedProjectsRead,
+                Permissions.AdminProhibitedProjectsWrite,
+                Permissions.AdminProhibitedUsernameRead,
+                Permissions.AdminProhibitedUsernameWrite,
+                Permissions.AdminProjectsDelete,
+                Permissions.AdminProjectsRead,
+                Permissions.AdminProjectsSetLimit,
+                Permissions.AdminProjectsWrite,
+                Permissions.AdminRoleAdd,
+                Permissions.AdminRoleDelete,
+                Permissions.AdminSponsorsRead,
+                Permissions.AdminUsersRead,
+                Permissions.AdminUsersWrite,
+                Permissions.AdminUsersEmailWrite,
+                Permissions.AdminUsersAccountRecoveryWrite,
+            ),
+        ),
+        (
+            Allow,
+            "group:support",
+            (
+                Permissions.AdminBannerRead,
+                Permissions.AdminDashboardRead,
+                Permissions.AdminDashboardSidebarRead,
+                Permissions.AdminEmailsRead,
+                Permissions.AdminFlagsRead,
+                Permissions.AdminJournalRead,
+                Permissions.AdminObservationsRead,
+                Permissions.AdminObservationsWrite,
+                Permissions.AdminOrganizationsRead,
+                Permissions.AdminProhibitedEmailDomainsRead,
+                Permissions.AdminProhibitedProjectsRead,
+                Permissions.AdminProhibitedUsernameRead,
+                Permissions.AdminProjectsRead,
+                Permissions.AdminProjectsSetLimit,
+                Permissions.AdminRoleAdd,
+                Permissions.AdminRoleDelete,
+                Permissions.AdminSponsorsRead,
+                Permissions.AdminUsersRead,
+                Permissions.AdminUsersEmailWrite,
+                Permissions.AdminUsersAccountRecoveryWrite,
+            ),
+        ),
+        (
+            Allow,
+            "group:moderators",
+            (
+                Permissions.AdminBannerRead,
+                Permissions.AdminDashboardRead,
+                Permissions.AdminDashboardSidebarRead,
+                Permissions.AdminEmailsRead,
+                Permissions.AdminFlagsRead,
+                Permissions.AdminJournalRead,
+                Permissions.AdminObservationsRead,
+                Permissions.AdminObservationsWrite,
+                Permissions.AdminOrganizationsRead,
+                Permissions.AdminProhibitedEmailDomainsRead,
+                Permissions.AdminProhibitedProjectsRead,
+                Permissions.AdminProhibitedUsernameRead,
+                Permissions.AdminProjectsRead,
+                Permissions.AdminProjectsSetLimit,
+                Permissions.AdminRoleAdd,
+                Permissions.AdminRoleDelete,
+                Permissions.AdminSponsorsRead,
+                Permissions.AdminUsersRead,
+            ),
+        ),
+        (
+            Allow,
+            "group:psf_staff",
+            (
+                Permissions.AdminBannerRead,
+                Permissions.AdminBannerWrite,
+                Permissions.AdminDashboardRead,
+                Permissions.AdminSponsorsRead,
+                Permissions.AdminSponsorsWrite,
+            ),
+        ),
+        (
+            Allow,
+            "group:observers",
+            (
+                Permissions.APIEcho,
+                Permissions.APIObservationsAdd,
+            ),
+        ),
+        (
+            Allow,
+            Authenticated,
+            (
+                Permissions.Account2FA,
+                Permissions.AccountAPITokens,
+                Permissions.AccountManage,
+                Permissions.AccountManagePublishing,
+                Permissions.AccountVerifyEmail,
+                Permissions.AccountVerifyOrgRole,
+                Permissions.AccountVerifyProjectRole,
+                Permissions.OrganizationsManage,
+                Permissions.ProjectsRead,
+            ),
+        ),
     ]
 
     def __init__(self, request):
@@ -69,7 +196,6 @@ class RootFactory:
 
 
 def require_https_tween_factory(handler, registry):
-
     if not registry.settings.get("enforce_https", True):
         return handler
 
@@ -77,7 +203,7 @@ def require_https_tween_factory(handler, registry):
         # If we have an :action URL and we're not using HTTPS, then we want to
         # return a 403 error.
         if request.params.get(":action", None) and request.scheme != "https":
-            resp = Response("SSL is required.", status=403, content_type="text/plain")
+            resp = HTTPForbidden(body="SSL is required.", content_type="text/plain")
             resp.status = "403 SSL is required"
             resp.headers["X-Fastly-Error"] = "803"
             return resp
@@ -91,19 +217,6 @@ def activate_hook(request):
     if request.path.startswith(("/_debug_toolbar/", "/static/")):
         return False
     return True
-
-
-def commit_veto(request, response):
-    # By default pyramid_tm will veto the commit anytime request.exc_info is not None,
-    # we are going to copy that logic with one difference, we are still going to commit
-    # if the exception was for a BasicAuthFailedPassword or BreachedPassword.
-    # TODO: We should probably use a registry or something instead of hardcoded.
-    allowed_types = (BasicAuthBreachedPassword, BasicAuthFailedPassword)
-
-    try:
-        return not isinstance(request.exc_info[1], allowed_types)
-    except (AttributeError, TypeError):
-        return False
 
 
 def template_view(config, name, route, template, route_kw=None, view_kw=None):
@@ -135,9 +248,72 @@ def maybe_set_compound(settings, base, name, envvar):
             settings[".".join([base, key])] = value
 
 
+def maybe_set_redis(settings, name, envvar, coercer=None, default=None, db=None):
+    """
+    Note on our DB numbering:
+      - General purpose caches and temporary storage should go in 1-9
+      - Celery queues, results, and schedulers should use 10-15
+      - By default Redis only allows use of 0-15, so db should be <16
+    """
+    if envvar in os.environ:
+        value = os.environ[envvar]
+        if coercer is not None:
+            value = coercer(value)
+        parsed_url = urlparse(value)  # noqa: WH001, we're going to urlunparse this
+        parsed_url = parsed_url._replace(path=(str(db) if db is not None else "0"))
+        value = urlunparse(parsed_url)
+        settings.setdefault(name, value)
+    elif default is not None:
+        settings.setdefault(name, default)
+
+
+def from_base64_encoded_json(configuration):
+    return json.loads(base64.urlsafe_b64decode(configuration.encode("ascii")))
+
+
+def reject_duplicate_post_keys_view(view, info):
+    if info.options.get("permit_duplicate_post_keys") or info.exception_only:
+        return view
+
+    else:
+        # If this isn't an exception or hasn't been permitted to have duplicate
+        # POST keys, wrap the view with a check
+
+        @functools.wraps(view)
+        def wrapped(context, request):
+            if request.POST:
+                # Determine if there are any duplicate keys
+                keys = list(request.POST.keys())
+                if len(keys) != len(set(keys)):
+                    return HTTPBadRequest(
+                        "POST body may not contain duplicate keys "
+                        f"(URL: {request.url!r})"
+                    )
+
+            # Casting succeeded, so just return the regular view
+            return view(context, request)
+
+        return wrapped
+
+
+reject_duplicate_post_keys_view.options = {"permit_duplicate_post_keys"}  # type: ignore
+
+
 def configure(settings=None):
+    # Sanity check: regardless of what we're configuring, some of Warehouse's
+    # application state depends on a handful of XDG directories existing.
+    platformdirs.user_data_dir(appname=secrets.token_urlsafe(), ensure_exists=True)
+    platformdirs.user_cache_dir(appname=secrets.token_urlsafe(), ensure_exists=True)
+
     if settings is None:
         settings = {}
+    settings["warehouse.forklift.legacy.MAX_FILESIZE_MIB"] = MAX_FILESIZE / ONE_MIB
+    settings["warehouse.forklift.legacy.MAX_PROJECT_SIZE_GIB"] = (
+        MAX_PROJECT_SIZE / ONE_GIB
+    )
+
+    # Allow configuring the log level. See `warehouse/logging.py` for more
+    maybe_set(settings, "logging.level", "LOG_LEVEL")
 
     # Add information about the current copy of the code.
     maybe_set(settings, "warehouse.commit", "SOURCE_COMMIT", default="null")
@@ -154,16 +330,25 @@ def configure(settings=None):
 
     # Pull in default configuration from the environment.
     maybe_set(settings, "warehouse.token", "WAREHOUSE_TOKEN")
+    maybe_set(settings, "warehouse.ip_salt", "WAREHOUSE_IP_SALT")
     maybe_set(settings, "warehouse.num_proxies", "WAREHOUSE_NUM_PROXIES", int)
     maybe_set(settings, "warehouse.domain", "WAREHOUSE_DOMAIN")
     maybe_set(settings, "forklift.domain", "FORKLIFT_DOMAIN")
+    maybe_set(settings, "auth.domain", "AUTH_DOMAIN")
     maybe_set(settings, "warehouse.legacy_domain", "WAREHOUSE_LEGACY_DOMAIN")
     maybe_set(settings, "site.name", "SITE_NAME", default="Warehouse")
     maybe_set(settings, "aws.key_id", "AWS_ACCESS_KEY_ID")
     maybe_set(settings, "aws.secret_key", "AWS_SECRET_ACCESS_KEY")
     maybe_set(settings, "aws.region", "AWS_REGION")
-    maybe_set(settings, "gcloud.credentials", "GCLOUD_CREDENTIALS")
+    maybe_set(settings, "b2.application_key_id", "B2_APPLICATION_KEY_ID")
+    maybe_set(settings, "b2.application_key", "B2_APPLICATION_KEY")
     maybe_set(settings, "gcloud.project", "GCLOUD_PROJECT")
+    maybe_set(
+        settings,
+        "gcloud.service_account_info",
+        "GCLOUD_SERVICE_JSON",
+        from_base64_encoded_json,
+    )
     maybe_set(
         settings, "warehouse.release_files_table", "WAREHOUSE_RELEASE_FILES_TABLE"
     )
@@ -174,35 +359,36 @@ def configure(settings=None):
         "GITHUB_TOKEN_SCANNING_META_API_URL",
         default="https://api.github.com/meta/public_keys/token_scanning",
     )
-    maybe_set(settings, "warehouse.trending_table", "WAREHOUSE_TRENDING_TABLE")
+    maybe_set(settings, "warehouse.downloads_table", "WAREHOUSE_DOWNLOADS_TABLE")
     maybe_set(settings, "celery.broker_url", "BROKER_URL")
-    maybe_set(settings, "celery.result_url", "REDIS_URL")
-    maybe_set(settings, "celery.scheduler_url", "REDIS_URL")
-    maybe_set(settings, "oidc.jwk_cache_url", "REDIS_URL")
+    maybe_set_redis(settings, "celery.broker_redis_url", "REDIS_URL", db=10)
+    maybe_set_redis(settings, "celery.result_url", "REDIS_URL", db=12)
+    maybe_set_redis(settings, "celery.scheduler_url", "REDIS_URL", db=0)
+    maybe_set_redis(settings, "oidc.jwk_cache_url", "REDIS_URL", db=1)
     maybe_set(settings, "database.url", "DATABASE_URL")
-    maybe_set(settings, "elasticsearch.url", "ELASTICSEARCH_URL")
-    maybe_set(settings, "elasticsearch.url", "ELASTICSEARCH_SIX_URL")
+    maybe_set(settings, "opensearch.url", "OPENSEARCH_URL")
     maybe_set(settings, "sentry.dsn", "SENTRY_DSN")
     maybe_set(settings, "sentry.transport", "SENTRY_TRANSPORT")
-    maybe_set(settings, "sessions.url", "REDIS_URL")
-    maybe_set(settings, "ratelimit.url", "REDIS_URL")
+    maybe_set_redis(settings, "sessions.url", "REDIS_URL", db=2)
+    maybe_set_redis(settings, "ratelimit.url", "REDIS_URL", db=3)
+    maybe_set(settings, "captcha.backend", "CAPTCHA_BACKEND")
+    maybe_set(settings, "recaptcha.site_key", "RECAPTCHA_SITE_KEY")
+    maybe_set(settings, "recaptcha.secret_key", "RECAPTCHA_SECRET_KEY")
+    maybe_set(settings, "hcaptcha.site_key", "HCAPTCHA_SITE_KEY")
+    maybe_set(settings, "hcaptcha.secret_key", "HCAPTCHA_SECRET_KEY")
     maybe_set(settings, "sessions.secret", "SESSION_SECRET")
     maybe_set(settings, "camo.url", "CAMO_URL")
     maybe_set(settings, "camo.key", "CAMO_KEY")
     maybe_set(settings, "docs.url", "DOCS_URL")
     maybe_set(settings, "ga.tracking_id", "GA_TRACKING_ID")
+    maybe_set(settings, "ga4.tracking_id", "GA4_TRACKING_ID")
     maybe_set(settings, "statuspage.url", "STATUSPAGE_URL")
+    maybe_set(settings, "hibp.api_key", "HIBP_API_KEY")
     maybe_set(settings, "token.password.secret", "TOKEN_PASSWORD_SECRET")
     maybe_set(settings, "token.email.secret", "TOKEN_EMAIL_SECRET")
     maybe_set(settings, "token.two_factor.secret", "TOKEN_TWO_FACTOR_SECRET")
-    maybe_set(
-        settings,
-        "warehouse.xmlrpc.search.enabled",
-        "WAREHOUSE_XMLRPC_SEARCH",
-        coercer=distutils.util.strtobool,
-        default=True,
-    )
-    maybe_set(settings, "warehouse.xmlrpc.cache.url", "REDIS_URL")
+    maybe_set(settings, "token.remember_device.secret", "TOKEN_REMEMBER_DEVICE_SECRET")
+    maybe_set_redis(settings, "warehouse.xmlrpc.cache.url", "REDIS_URL", db=4)
     maybe_set(
         settings,
         "warehouse.xmlrpc.client.ratelimit_string",
@@ -220,24 +406,80 @@ def configure(settings=None):
     )
     maybe_set(
         settings,
+        "remember_device.days",
+        "REMEMBER_DEVICE_DAYS",
+        coercer=int,
+        default=30,
+    )
+    settings.setdefault(
+        "remember_device.seconds",
+        timedelta(days=settings.get("remember_device.days")).total_seconds(),
+    )
+    settings.setdefault(
+        "token.remember_device.max_age", settings.get("remember_device.seconds")
+    )
+    maybe_set(
+        settings,
         "token.default.max_age",
         "TOKEN_DEFAULT_MAX_AGE",
         coercer=int,
         default=21600,  # 6 hours
     )
+    maybe_set(
+        settings,
+        "reconcile_file_storages.batch_size",
+        "RECONCILE_FILE_STORAGES_BATCH_SIZE",
+        coercer=int,
+        default=100,
+    )
+    maybe_set(
+        settings,
+        "metadata_backfill.batch_size",
+        "METADATA_BACKFILL_BATCH_SIZE",
+        coercer=int,
+        default=500,
+    )
+    maybe_set_compound(settings, "billing", "backend", "BILLING_BACKEND")
     maybe_set_compound(settings, "files", "backend", "FILES_BACKEND")
+    maybe_set_compound(settings, "archive_files", "backend", "ARCHIVE_FILES_BACKEND")
     maybe_set_compound(settings, "simple", "backend", "SIMPLE_BACKEND")
     maybe_set_compound(settings, "docs", "backend", "DOCS_BACKEND")
     maybe_set_compound(settings, "sponsorlogos", "backend", "SPONSORLOGOS_BACKEND")
     maybe_set_compound(settings, "origin_cache", "backend", "ORIGIN_CACHE")
     maybe_set_compound(settings, "mail", "backend", "MAIL_BACKEND")
     maybe_set_compound(settings, "metrics", "backend", "METRICS_BACKEND")
+    maybe_set_compound(settings, "breached_emails", "backend", "BREACHED_EMAILS")
     maybe_set_compound(settings, "breached_passwords", "backend", "BREACHED_PASSWORDS")
-    maybe_set_compound(settings, "malware_check", "backend", "MALWARE_CHECK_BACKEND")
+    maybe_set(
+        settings,
+        "oidc.backend",
+        "OIDC_BACKEND",
+        default="warehouse.oidc.services.OIDCPublisherService",
+    )
+    maybe_set(
+        settings,
+        "integrity.backend",
+        "INTEGRITY_BACKEND",
+        default="warehouse.attestations.services.IntegrityService",
+    )
 
     # Pythondotorg integration settings
-    maybe_set(settings, "pythondotorg.host", "PYTHONDOTORG_HOST", default="python.org")
+    maybe_set(
+        settings,
+        "pythondotorg.host",
+        "PYTHONDOTORG_HOST",
+        default="https://www.python.org",
+    )
     maybe_set(settings, "pythondotorg.api_token", "PYTHONDOTORG_API_TOKEN")
+
+    # Helpscout integration settings
+    maybe_set(
+        settings, "admin.helpscout.app_secret", "HELPSCOUT_APP_SECRET", default=None
+    )
+    maybe_set(settings, "helpdesk.backend", "HELPDESK_BACKEND")
+    maybe_set(settings, "helpscout.app_id", "HELPSCOUT_WAREHOUSE_APP_ID")
+    maybe_set(settings, "helpscout.app_secret", "HELPSCOUT_WAREHOUSE_APP_SECRET")
+    maybe_set(settings, "helpscout.mailbox_id", "HELPSCOUT_WAREHOUSE_MAILBOX_ID")
 
     # Configure our ratelimiters
     maybe_set(
@@ -266,6 +508,18 @@ def configure(settings=None):
     )
     maybe_set(
         settings,
+        "warehouse.account.verify_email_ratelimit_string",
+        "VERIFY_EMAIL_RATELIMIT_STRING",
+        default="3 per 6 hours",
+    )
+    maybe_set(
+        settings,
+        "warehouse.account.accounts_search_ratelimit_string",
+        "ACCOUNTS_SEARCH_RATELIMIT_STRING",
+        default="100 per hour",
+    )
+    maybe_set(
+        settings,
         "warehouse.account.password_reset_ratelimit_string",
         "PASSWORD_RESET_RATELIMIT_STRING",
         default="5 per day",
@@ -274,45 +528,42 @@ def configure(settings=None):
         settings,
         "warehouse.manage.oidc.user_registration_ratelimit_string",
         "USER_OIDC_REGISTRATION_RATELIMIT_STRING",
-        default="20 per day",
+        default="100 per day",
     )
     maybe_set(
         settings,
         "warehouse.manage.oidc.ip_registration_ratelimit_string",
         "IP_OIDC_REGISTRATION_RATELIMIT_STRING",
-        default="20 per day",
+        default="100 per day",
+    )
+    maybe_set(
+        settings,
+        "warehouse.packaging.project_create_user_ratelimit_string",
+        "PROJECT_CREATE_USER_RATELIMIT_STRING",
+        default="20 per hour",
+    )
+    maybe_set(
+        settings,
+        "warehouse.packaging.project_create_ip_ratelimit_string",
+        "PROJECT_CREATE_IP_RATELIMIT_STRING",
+        default="40 per hour",
+    )
+    maybe_set(
+        settings,
+        "warehouse.search.ratelimit_string",
+        "SEARCH_RATELIMIT_STRING",
+        default="5 per second",
     )
 
-    # 2FA feature flags
-    maybe_set(
-        settings,
-        "warehouse.two_factor_requirement.enabled",
-        "TWOFACTORREQUIREMENT_ENABLED",
-        coercer=distutils.util.strtobool,
-        default=False,
-    )
-    maybe_set(
-        settings,
-        "warehouse.two_factor_mandate.available",
-        "TWOFACTORMANDATE_AVAILABLE",
-        coercer=distutils.util.strtobool,
-        default=False,
-    )
-    maybe_set(
-        settings,
-        "warehouse.two_factor_mandate.enabled",
-        "TWOFACTORMANDATE_ENABLED",
-        coercer=distutils.util.strtobool,
-        default=False,
-    )
+    # OIDC feature flags and settings
+    maybe_set(settings, "warehouse.oidc.audience", "OIDC_AUDIENCE")
 
-    # OIDC feature flags
     maybe_set(
         settings,
-        "warehouse.oidc.enabled",
-        "OIDC_ENABLED",
-        coercer=distutils.util.strtobool,
-        default=False,
+        "warehouse.organizations.max_undecided_organization_applications",
+        "ORGANIZATION_MAX_UNDECIDED_APPLICATIONS",
+        coercer=int,
+        default=3,
     )
 
     # Add the settings we use when the environment is set to development.
@@ -332,6 +583,7 @@ def configure(settings=None):
                     "headers.HeaderDebugPanel",
                     "request_vars.RequestVarsDebugPanel",
                     "renderings.RenderingsDebugPanel",
+                    "session.SessionDebugPanel",
                     "logger.LoggingPanel",
                     "performance.PerformanceDebugPanel",
                     "routes.RoutesDebugPanel",
@@ -340,6 +592,12 @@ def configure(settings=None):
                     "introspection.IntrospectionDebugPanel",
                 ]
             ],
+        )
+        maybe_set(
+            settings,
+            "livereload.url",
+            "LIVERELOAD_URL",
+            default="http://localhost:35729",
         )
 
     # Actually setup our Pyramid Configurator with the values pulled in from
@@ -381,6 +639,10 @@ def configure(settings=None):
     # Our translation strings are all in the "messages" domain
     config.add_settings({"jinja2.i18n.domain": "messages"})
 
+    # Trim the Jinja blocks from the output, it's extra whitespace.
+    config.add_settings({"jinja2.lstrip_blocks": True})
+    config.add_settings({"jinja2.trim_blocks": True})
+
     # We also want to use Jinja2 for .html templates as well, because we just
     # assume that all templates will be using Jinja.
     config.add_jinja2_renderer(".html")
@@ -394,7 +656,11 @@ def configure(settings=None):
 
     # We need to enable our Client Side Include extension
     config.get_settings().setdefault(
-        "jinja2.extensions", ["warehouse.utils.html.ClientSideIncludeExtension"]
+        "jinja2.extensions",
+        [
+            "warehouse.utils.html.ClientSideIncludeExtension",
+            "warehouse.i18n.extensions.TrimmedTranslatableTagsExtension",
+        ],
     )
 
     # We'll want to configure some filters for Jinja2 as well.
@@ -410,7 +676,13 @@ def configure(settings=None):
     filters.setdefault("format_package_type", "warehouse.filters:format_package_type")
     filters.setdefault("parse_version", "warehouse.filters:parse_version")
     filters.setdefault("localize_datetime", "warehouse.filters:localize_datetime")
+    filters.setdefault("ctime", "warehouse.filters:ctime")
     filters.setdefault("is_recent", "warehouse.filters:is_recent")
+    filters.setdefault("canonicalize_name", "packaging.utils:canonicalize_name")
+    filters.setdefault("format_email", "warehouse.filters:format_email")
+    filters.setdefault(
+        "remove_invalid_xml_unicode", "warehouse.filters:remove_invalid_xml_unicode"
+    )
 
     # We also want to register some global functions for Jinja
     jglobals = config.get_settings().setdefault("jinja2.globals", {})
@@ -421,6 +693,8 @@ def configure(settings=None):
 
     # And some enums to reuse in the templates
     jglobals.setdefault("AdminFlagValue", "warehouse.admin.flags:AdminFlagValue")
+    jglobals.setdefault("EventTag", "warehouse.events.tags:EventTag")
+    jglobals.setdefault("Permissions", "warehouse.authnz:Permissions")
     jglobals.setdefault(
         "OrganizationInvitationStatus",
         "warehouse.organizations.models:OrganizationInvitationStatus",
@@ -434,6 +708,9 @@ def configure(settings=None):
     jglobals.setdefault(
         "RoleInvitationStatus", "warehouse.packaging.models:RoleInvitationStatus"
     )
+    jglobals.setdefault(
+        "TeamProjectRoleType", "warehouse.organizations.models:TeamProjectRoleType"
+    )
 
     # We'll store all of our templates in one location, warehouse/templates
     # so we'll go ahead and add that to the Jinja2 search path.
@@ -443,7 +720,13 @@ def configure(settings=None):
 
     # We want to configure our JSON renderer to sort the keys, and also to use
     # an ultra compact serialization format.
-    config.add_renderer("json", renderers.JSON(sort_keys=True, separators=(",", ":")))
+    config.add_renderer(
+        "json",
+        renderers.JSON(
+            serializer=orjson.dumps,
+            option=orjson.OPT_SORT_KEYS | orjson.OPT_APPEND_NEWLINE,
+        ),
+    )
 
     # Configure retry support.
     config.add_settings({"retry.attempts": 3})
@@ -456,7 +739,6 @@ def configure(settings=None):
         {
             "tm.manager_hook": lambda request: transaction.TransactionManager(),
             "tm.activate_hook": activate_hook,
-            "tm.commit_veto": commit_veto,
             "tm.annotate_user": False,
         }
     )
@@ -496,12 +778,11 @@ def configure(settings=None):
 
     config.include(".static")
 
-    config.include(".policy")
-
     config.include(".search")
 
-    # Register the support for AWS and Google Cloud
+    # Register the support for AWS, Backblaze,and Google Cloud
     config.include(".aws")
+    config.include(".b2")
     config.include(".gcloud")
 
     # Register our session support
@@ -520,11 +801,11 @@ def configure(settings=None):
     # Register support for Macaroon based authentication
     config.include(".macaroons")
 
-    # Register support for OIDC provider based authentication
+    # Register support for OIDC based authentication
     config.include(".oidc")
 
-    # Register support for malware checks
-    config.include(".malware")
+    # Register support for attestations
+    config.include(".attestations")
 
     # Register logged-in views
     config.include(".manage")
@@ -532,11 +813,16 @@ def configure(settings=None):
     # Register our organization support.
     config.include(".organizations")
 
+    # Register our subscription support.
+    config.include(".subscriptions")
+
     # Allow the packaging app to register any services it has.
     config.include(".packaging")
 
     # Configure redirection support
-    config.include(".redirects")
+    config.include(".redirects")  # internal
+    config.include("pyramid_redirect")  # external
+    config.add_settings({"pyramid_redirect.structlog": True})
 
     # Register all our URL routes for Warehouse.
     config.include(".routes")
@@ -567,6 +853,11 @@ def configure(settings=None):
         ],
     )
 
+    # Reject requests with duplicate POST keys
+    config.add_view_deriver(
+        reject_duplicate_post_keys_view, over="rendered_view", under="decorated_view"
+    )
+
     # Enable Warehouse to serve our static files
     prevent_http_cache = config.get_settings().get("pyramid.prevent_http_cache", False)
     config.add_static_view(
@@ -593,16 +884,23 @@ def configure(settings=None):
         "warehouse:static/dist/manifest.json", prefix="/static/"
     )
 
+    # Set up API configuration
+    config.include(".api.config")
+
     # Enable support of passing certain values like remote host, client
     # address, and protocol support in from an outer proxy to the application.
     config.add_wsgi_middleware(
         ProxyFixer,
         token=config.registry.settings["warehouse.token"],
+        ip_salt=config.registry.settings["warehouse.ip_salt"],
         num_proxies=config.registry.settings.get("warehouse.num_proxies", 1),
     )
 
     # Protect against cache poisoning via the X-Vhm-Root headers.
     config.add_wsgi_middleware(VhmRootRemover)
+
+    # Add our extensions to Request
+    config.include(".utils.wsgi")
 
     # We want Sentry to be the last things we add here so that it's the outer
     # most WSGI middleware.
@@ -614,8 +912,17 @@ def configure(settings=None):
     # Register Referrer-Policy service
     config.include(".referrer_policy")
 
+    # Register Captcha service
+    config.include(".captcha")
+
+    # Register HelpDesk service
+    config.include(".helpdesk")
+
     config.add_settings({"http": {"verify": "/etc/ssl/certs/"}})
     config.include(".http")
+
+    # Register our row counting maintenance
+    config.include(".utils.row_counter")
 
     # Scan everything for configuration
     config.scan(
@@ -627,8 +934,8 @@ def configure(settings=None):
     )
 
     # Sanity check our request and responses.
-    # Note: It is very important that this go last. We need everything else that might
-    #       have added a tween to be registered prior to this.
+    # Note: It is very important that this go last. We need everything else
+    # that might have added a tween to be registered prior to this.
     config.include(".sanity")
 
     # Finally, commit all of our changes

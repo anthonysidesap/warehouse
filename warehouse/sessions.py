@@ -40,7 +40,6 @@ def _invalid_method(method):
 
 @implementer(ISession)
 class InvalidSession(dict):
-
     __contains__ = _invalid_method(dict.__contains__)
     __delitem__ = _invalid_method(dict.__delitem__)
     __getitem__ = _invalid_method(dict.__getitem__)
@@ -222,7 +221,6 @@ class Session(dict):
 
 @implementer(ISessionFactory)
 class SessionFactory:
-
     cookie_name = "session_id"
     max_age = 12 * 60 * 60  # 12 hours
 
@@ -234,7 +232,7 @@ class SessionFactory:
         return self._process_request(request)
 
     def _redis_key(self, session_id):
-        return "warehouse/session/data/{}".format(session_id)
+        return f"warehouse/session/data/{session_id}"
 
     def _process_request(self, request):
         # Register a callback with the request so we can save the session once

@@ -10,29 +10,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import datetime
-
 from pyramid.authentication import (
     SessionAuthenticationHelper,
     extract_http_basic_credentials,
 )
-from pyramid.httpexceptions import HTTPUnauthorized
-from pyramid.interfaces import IAuthorizationPolicy, ISecurityPolicy
-from pyramid.threadlocal import get_current_request
+from pyramid.authorization import ACLHelper
+from pyramid.httpexceptions import HTTPForbidden
+from pyramid.interfaces import ISecurityPolicy
+from pyramid.security import Allowed
 from zope.interface import implementer
 
-from warehouse.accounts.interfaces import IPasswordBreachedService, IUserService
-from warehouse.accounts.models import DisableReason
+from warehouse.accounts.interfaces import IUserService
+from warehouse.accounts.utils import UserContext
 from warehouse.cache.http import add_vary_callback
-from warehouse.email import send_password_compromised_email_hibp
-from warehouse.errors import (
-    BasicAuthAccountFrozen,
-    BasicAuthBreachedPassword,
-    BasicAuthFailedPassword,
-    WarehouseDenied,
-)
-from warehouse.packaging.models import TwoFactorRequireable
-from warehouse.utils.security_policy import AuthenticationMethod
+from warehouse.errors import WarehouseDenied
+from warehouse.utils.security_policy import AuthenticationMethod, principals_for
 
 
 def _format_exc_status(exc, message):
@@ -40,79 +32,11 @@ def _format_exc_status(exc, message):
     return exc
 
 
-def _basic_auth_check(username, password, request):
-    # A route must be matched
-    if not request.matched_route:
-        return False
-
-    # Basic authentication can only be used for uploading
-    if request.matched_route.name != "forklift.legacy.file_upload":
-        return False
-
-    login_service = request.find_service(IUserService, context=None)
-    breach_service = request.find_service(IPasswordBreachedService, context=None)
-
-    userid = login_service.find_userid(username)
-    if userid is not None:
-        user = login_service.get_user(userid)
-        is_disabled, disabled_for = login_service.is_disabled(user.id)
-        if is_disabled:
-            # This technically violates the contract a little bit, this function is
-            # meant to return False if the user cannot log in. However we want to
-            # present a different error message than is normal when we're denying the
-            # log in because of a compromised password. So to do that, we'll need to
-            # raise a HTTPError that'll ultimately get returned to the client. This is
-            # OK to do here because we've already successfully authenticated the
-            # credentials, so it won't screw up the fall through to other authentication
-            # mechanisms (since we wouldn't have fell through to them anyways).
-            if disabled_for == DisableReason.CompromisedPassword:
-                raise _format_exc_status(
-                    BasicAuthBreachedPassword(), breach_service.failure_message_plain
-                )
-            elif disabled_for == DisableReason.AccountFrozen:
-                raise _format_exc_status(BasicAuthAccountFrozen(), "Account is frozen.")
-            else:
-                raise _format_exc_status(HTTPUnauthorized(), "Account is disabled.")
-        elif login_service.check_password(
-            user.id,
-            password,
-            tags=["mechanism:basic_auth", "method:auth", "auth_method:basic"],
-        ):
-            if breach_service.check_password(
-                password, tags=["method:auth", "auth_method:basic"]
-            ):
-                send_password_compromised_email_hibp(request, user)
-                login_service.disable_password(
-                    user.id, reason=DisableReason.CompromisedPassword
-                )
-                raise _format_exc_status(
-                    BasicAuthBreachedPassword(), breach_service.failure_message_plain
-                )
-
-            login_service.update_user(user.id, last_login=datetime.datetime.utcnow())
-            return True
-        else:
-            user.record_event(
-                tag="account:login:failure",
-                ip_address=request.remote_addr,
-                additional={"reason": "invalid_password", "auth_method": "basic"},
-            )
-            raise _format_exc_status(
-                BasicAuthFailedPassword(),
-                "Invalid or non-existent authentication information. "
-                "See {projecthelp} for more information.".format(
-                    projecthelp=request.help_url(_anchor="invalid-auth")
-                ),
-            )
-
-    # No user, no authentication.
-    return False
-
-
 @implementer(ISecurityPolicy)
 class SessionSecurityPolicy:
     def __init__(self):
         self._session_helper = SessionAuthenticationHelper()
+        self._acl = ACLHelper()
 
     def identity(self, request):
         # If we're calling into this API on a request, then we want to register
@@ -120,6 +44,9 @@ class SessionSecurityPolicy:
         # Cookie header.
         request.add_response_callback(add_vary_callback("Cookie"))
         request.authentication_method = AuthenticationMethod.SESSION
+
+        if request.banned.by_ip(request.remote_addr):
+            return None
 
         # A route must be matched
         if not request.matched_route:
@@ -129,7 +56,20 @@ class SessionSecurityPolicy:
         if request.matched_route.name == "forklift.legacy.file_upload":
             return None
 
+        # TODO: This feels wrong - special casing for paths and
+        #  prefixes isn't sustainable.
+        #  May need to revisit https://github.com/pypi/warehouse/pull/13854
+        #  Without this guard, we raise a RuntimeError related to `uses_session`,
+        #  because the `SessionAuthenticationHelper()` is called with no session.
+        #  Alternately, we could wrap the call to `authenticated_userid` in a
+        #  try/except RuntimeError block, but that feels like a band-aid.
+        # Session authentication cannot be used for /api routes
+        if request.matched_route.name.startswith("api."):
+            return None
+
         userid = self._session_helper.authenticated_userid(request)
+        request._unauthenticated_userid = userid
+
         if userid is None:
             return None
 
@@ -144,6 +84,13 @@ class SessionSecurityPolicy:
         if user is None:
             return None
 
+        # User may have been frozen or disabled since the session was created.
+        is_disabled, _ = login_service.is_disabled(userid)
+        if is_disabled:
+            request.session.invalidate()
+            request.session.flash("Session invalidated", queue="error")
+            return None
+
         # Our session might be "valid" despite predating a password change.
         if request.session.password_outdated(
             login_service.get_password_timestamp(userid)
@@ -155,7 +102,7 @@ class SessionSecurityPolicy:
             return None
 
         # Sessions can only authenticate users, not any other type of identity.
-        return user
+        return UserContext(user=user, macaroon=None)
 
     def forget(self, request, **kw):
         return self._session_helper.forget(request, **kw)
@@ -165,15 +112,17 @@ class SessionSecurityPolicy:
 
     def authenticated_userid(self, request):
         # Handled by MultiSecurityPolicy
-        return NotImplemented
+        raise NotImplementedError
 
     def permits(self, request, context, permission):
-        # Handled by MultiSecurityPolicy
-        return NotImplemented
+        return _permits_for_user_policy(self._acl, request, context, permission)
 
 
 @implementer(ISecurityPolicy)
 class BasicAuthSecurityPolicy:
+    """The BasicAuthSecurityPolicy is no longer allowed
+    and raises a message when used for uploads when it's not an API Token"""
+
     def identity(self, request):
         # If we're calling into this API on a request, then we want to register
         # a callback which will ensure that the response varies based on the
@@ -181,98 +130,113 @@ class BasicAuthSecurityPolicy:
         request.add_response_callback(add_vary_callback("Authorization"))
         request.authentication_method = AuthenticationMethod.BASIC_AUTH
 
+        if not request.matched_route:
+            return None
+        if request.matched_route.name != "forklift.legacy.file_upload":
+            return None
+
         credentials = extract_http_basic_credentials(request)
         if credentials is None:
             return None
 
-        username, password = credentials
-        if not _basic_auth_check(username, password, request):
+        username, _password = credentials
+
+        # The API Token username is allowed to pass through to the
+        # MacaroonSecurityPolicy.
+        if username == "__token__":
             return None
 
-        # Like sessions; basic auth can only authenticate users.
-        login_service = request.find_service(IUserService, context=None)
-        return login_service.get_user_by_username(username)
+        raise _format_exc_status(
+            HTTPForbidden(),
+            "Username/Password authentication is no longer supported. "
+            "Migrate to API Tokens or Trusted Publishers instead. "
+            f"See {request.help_url(_anchor='apitoken')} "
+            f"and {request.help_url(_anchor='trusted-publishers')}",
+        )
 
     def forget(self, request, **kw):
         # No-op.
         return []
 
     def remember(self, request, userid, **kw):
-        # NOTE: We could make realm configurable here.
-        return [("WWW-Authenticate", 'Basic realm="Realm"')]
+        # No-op.
+        return []
 
     def authenticated_userid(self, request):
-        # Handled by MultiSecurityPolicy
-        return NotImplemented
+        raise NotImplementedError
 
     def permits(self, request, context, permission):
-        # Handled by MultiSecurityPolicy
-        return NotImplemented
+        raise NotImplementedError
 
 
-@implementer(IAuthorizationPolicy)
-class TwoFactorAuthorizationPolicy:
-    def __init__(self, policy):
-        self.policy = policy
+def _permits_for_user_policy(acl, request, context, permission):
+    # It should only be possible for request.identity to be a UserContext object
+    # at this point, and we only allow a UserContext in these policies.
+    # Note that the UserContext object must not have a macaroon, since a macaroon
+    # is present during an API-token-authenticated request, not a session.
+    assert isinstance(request.identity, UserContext)
+    assert request.identity.macaroon is None
 
-    def permits(self, context, principals, permission):
-        # The Pyramid API doesn't let us access the request here, so we have to pull it
-        # out of the thread local instead.
-        # TODO: Work with Pyramid devs to figure out if there is a better way to support
-        #       the worklow we are using here or not.
-        request = get_current_request()
+    # Dispatch to our ACL
+    # NOTE: These parameters are in a different order than the signature of this method.
+    res = acl.permits(context, principals_for(request.identity), permission)
 
-        # Our request could possibly be a None, if there isn't an active request, in
-        # that case we're going to always deny, because without a request, we can't
-        # determine if this request is authorized or not.
-        if request is None:
-            return WarehouseDenied(
-                "There was no active request.", reason="no_active_request"
-            )
+    # Verify email before you can manage account/projects.
+    if (
+        isinstance(res, Allowed)
+        and not request.identity.user.has_primary_verified_email
+        and request.matched_route.name
+        not in {"manage.unverified-account", "accounts.verify-email"}
+    ):
+        return WarehouseDenied("unverified", reason="unverified_email")
 
-        # Check if the subpolicy permits authorization
-        subpolicy_permits = self.policy.permits(context, principals, permission)
+    # If our underlying permits allowed this, we will check our 2FA status,
+    # that might possibly return a reason to deny the request anyways, and if
+    # it does we'll return that.
+    if isinstance(res, Allowed):
+        mfa = _check_for_mfa(request, context)
+        if mfa is not None:
+            return mfa
 
-        # If the request is permitted by the subpolicy, check if the context is
-        # 2FA requireable, if 2FA is indeed required, and if the user has 2FA
-        # enabled
-        if subpolicy_permits and isinstance(context, TwoFactorRequireable):
-            if (
-                request.registry.settings["warehouse.two_factor_requirement.enabled"]
-                and context.owners_require_2fa
-                and not request.user.has_two_factor
-            ):
-                return WarehouseDenied(
-                    "This project requires two factor authentication to be enabled "
-                    "for all contributors.",
-                    reason="owners_require_2fa",
-                )
-            if (
-                request.registry.settings["warehouse.two_factor_mandate.enabled"]
-                and context.pypi_mandates_2fa
-                and not request.user.has_two_factor
-            ):
-                return WarehouseDenied(
-                    "PyPI requires two factor authentication to be enabled "
-                    "for all contributors to this project.",
-                    reason="pypi_mandates_2fa",
-                )
-            if (
-                request.registry.settings["warehouse.two_factor_mandate.available"]
-                and context.pypi_mandates_2fa
-                and not request.user.has_two_factor
-            ):
-                request.session.flash(
-                    "This project is included in PyPI's two-factor mandate "
-                    "for critical projects. In the future, you will be unable to "
-                    "perform this action without enabling 2FA for your account",
-                    queue="warning",
-                )
+    return res
 
-        return subpolicy_permits
 
-    def principals_allowed_by_permission(self, context, permission):
-        # We just dispatch this, because this policy doesn't restrict what
-        # principals are allowed by a particular permission, it just restricts
-        # specific requests to not have that permission.
-        return self.policy.principals_allowed_by_permission(context, permission)
+def _check_for_mfa(request, context) -> WarehouseDenied | None:
+    # It should only be possible for request.identity to be a UserContext object
+    # at this point, and we only allow a UserContext in these policies.
+    # Note that the UserContext object must not have a macaroon, since a macaroon
+    # is present during an API-token-authenticated request, not a session.
+    assert isinstance(request.identity, UserContext)
+    assert request.identity.macaroon is None
+
+    if request.identity.user.has_two_factor:
+        # We're good to go!
+        return None
+
+    # Return a different message for upload endpoint first.
+    if request.matched_route.name == "forklift.legacy.file_upload":
+        return WarehouseDenied(
+            "You must enable two factor authentication to upload",
+            reason="upload_2fa_required",
+        )
+
+    # Management routes that don't require 2FA, mostly to set up 2FA.
+    _exempt_routes = [
+        "manage.account.recovery-codes",
+        "manage.account.totp-provision",
+        "manage.account.two-factor",
+        "manage.account.webauthn-provision",
+        "manage.unverified-account",
+        "accounts.verify-email",
+    ]
+
+    if request.matched_route.name == "manage.account" or any(
+        request.matched_route.name.startswith(route) for route in _exempt_routes
+    ):
+        return None
+
+    # No exemptions matched, 2FA is required.
+    return WarehouseDenied(
+        "You must enable two factor authentication.",
+        reason="manage_2fa_required",
+    )

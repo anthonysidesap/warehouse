@@ -11,8 +11,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { Controller } from "stimulus";
-import distanceInWordsToNow from "date-fns/distance_in_words_to_now";
+import { Controller } from "@hotwired/stimulus";
+import formatDistanceToNow from "date-fns/formatDistanceToNow";
 import format from "date-fns/format";
 
 export default class extends Controller {
@@ -23,7 +23,7 @@ export default class extends Controller {
     let date = timestamp.substr(0, 10).split("-").map(i => parseInt(i));
     let time = timestamp.substr(11, 8).split(":").map(i => parseInt(i));
     return new Date(
-      Date.UTC(parseInt(date[0]), parseInt(date[1]) - 1, parseInt(date[2]), ...time)
+      Date.UTC(parseInt(date[0]), parseInt(date[1]) - 1, parseInt(date[2]), ...time),
     );
   }
 
@@ -31,7 +31,7 @@ export default class extends Controller {
     const timestamp = this.element.getAttribute("datetime");
     const locale = document.documentElement.lang;
     let localTime = this.getLocalTimeFromTimestamp(timestamp);
-    let isoDate = format(localTime, "YYYY-MM-DD HH:mm:ss (Z)");
+    let isoDate = format(localTime, "yyyy-MM-dd HH:mm:ss (xxx)");
     let startOfDay = new Date();
     startOfDay.setUTCHours(0, 0, 0, 0);
 
@@ -40,7 +40,7 @@ export default class extends Controller {
     const options = { month: "short", day: "numeric", year: "numeric" };
 
     if (isRelative && localTime > startOfDay) {
-      this.element.textContent = distanceInWordsToNow(localTime, {includeSeconds: true}) + " ago";
+      this.element.textContent = formatDistanceToNow(localTime, {includeSeconds: true}) + " ago";
     } else {
       if (showTime) {
         this.element.textContent = localTime.toLocaleTimeString(locale, options);
