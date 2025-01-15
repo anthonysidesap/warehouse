@@ -37,24 +37,25 @@
       </div>
     </div>
     {% else %}
-    <div class="col-half">
-      <h1 class="page-title page-title--wsubtitle heading-wsubtitle__heading">{{ title }}</h1>
-      <p>{% trans %}If you lose access to your authentication application or security key(s), you’ll need to use one of these recovery codes to log into your PyPI account. Each code can only be used <strong>once</strong>.{% endtrans %}</p>
-      <p>{% trans %}These codes should <strong>only</strong> be used for account recovery, not for typical logins.{% endtrans %}</p>
-      <p>{% trans %}<strong>Keep these somewhere safe</strong>. If you lose your authentication application or security key(s) and do not have access to these recovery codes, you may permanently lose access to your PyPI account!{% endtrans %}</p>
-    </div>
-    <div class="col-half">
-      <div>
+    <div class="col-grid">
+      <div class="col-half">
+        <h1 class="page-title page-title--wsubtitle heading-wsubtitle__heading">{{ title }}</h1>
+        <p>{% trans %}If you lose access to your authentication application or security key(s), you’ll need to use one of these recovery codes to log into your PyPI account. Each code can only be used <strong>once</strong>.{% endtrans %}</p>
+        <p>{% trans %}These codes should <strong>only</strong> be used for account recovery, not for typical logins.{% endtrans %}</p>
+        <p>{% trans %}<strong>Keep these somewhere safe</strong>. If you lose your authentication application or security key(s) and do not have access to these recovery codes, you may permanently lose access to your PyPI account!{% endtrans %}</p>
+      </div>
+      <div class="col-half">
         <h2>{% trans %}Save your recovery codes{% endtrans %}</h2>
         <div class="recovery-codes">
           <div>
-            <div class="recovery-codes__-codes">
+            <div class="recovery-codes__-codes" data-controller="clipboard">
               <ul>
                 {% for recovery_code in recovery_codes %}
                 <li><code>{{ recovery_code }}</code></li>
                 {% endfor %}
               </ul>
-              <button class="button button-secondary copy-tooltip copy-tooltip-w" data-tooltip-label="{% trans %}Copy to clipboard{% endtrans %}" data-clipboard-text="{{ 'PyPI recovery codes\n' + recovery_codes|join('\n') }}">
+              <span hidden data-clipboard-target="source">{{ 'PyPI recovery codes\n' + recovery_codes|join('\n') }}</span>
+              <button class="button button-secondary copy-tooltip copy-tooltip-w" data-action="clipboard#copy" data-clipboard-target="tooltip" data-clipboard-tooltip-value="{% trans %}Copy to clipboard{% endtrans %}">
                 {% trans %}Copy{% endtrans %}
               </button>
               {% set _sitename = "TestPyPI" if testPyPI else "PyPI" %}

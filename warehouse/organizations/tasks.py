@@ -14,12 +14,15 @@ import datetime
 
 from warehouse import tasks
 from warehouse.accounts.interfaces import ITokenService, TokenExpired
+from warehouse.events.tags import EventTag
 from warehouse.organizations.interfaces import IOrganizationService
 from warehouse.organizations.models import (
     Organization,
     OrganizationInvitation,
     OrganizationInvitationStatus,
+    OrganizationStripeSubscription,
 )
+from warehouse.subscriptions.interfaces import IBillingService
 
 CLEANUP_AFTER = datetime.timedelta(days=30)
 
@@ -39,6 +42,20 @@ def update_organization_invitation_status(request):
         try:
             token_service.loads(invite.token)
         except TokenExpired:
+            invite.user.record_event(
+                tag=EventTag.Account.OrganizationRoleExpireInvite,
+                request=request,
+                additional={
+                    "organization_name": invite.organization.name,
+                },
+            )
+            invite.organization.record_event(
+                tag=EventTag.Organization.OrganizationRoleExpireInvite,
+                request=request,
+                additional={
+                    "target_user_id": str(invite.user.id),
+                },
+            )
             invite.invite_status = OrganizationInvitationStatus.Expired
 
 
@@ -49,7 +66,8 @@ def delete_declined_organizations(request):
         .filter(
             Organization.is_active == False,  # noqa: E712
             Organization.is_approved == False,  # noqa: E712
-            Organization.date_approved < (datetime.datetime.utcnow() - CLEANUP_AFTER),
+            Organization.date_approved
+            < (datetime.datetime.now(datetime.UTC) - CLEANUP_AFTER),
         )
         .all()
     )
@@ -57,9 +75,23 @@ def delete_declined_organizations(request):
     for organization in organizations:
         organization_service = request.find_service(IOrganizationService, context=None)
         # TODO: Cannot call this after deletion so how exactly do we handle this?
-        organization_service.record_event(
-            organization.id,
-            tag="organization:delete",
+        organization.record_event(
+            tag=EventTag.Organization.OrganizationDelete,
+            request=request,
             additional={"deleted_by": "CRON"},
         )
         organization_service.delete_organization(organization.id)
+
+
+@tasks.task(ignore_result=True, acks_late=True)
+def update_organziation_subscription_usage_record(request):
+    # Get organizations with a subscription
+    organization_subscriptions = request.db.query(OrganizationStripeSubscription).all()
+
+    # Call the Billing API to update the usage record of this subscription item
+    for org_subscription in organization_subscriptions:
+        billing_service = request.find_service(IBillingService, context=None)
+        billing_service.create_or_update_usage_record(
+            org_subscription.subscription.subscription_item.subscription_item_id,
+            len(org_subscription.organization.users),
+        )

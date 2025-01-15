@@ -17,7 +17,6 @@ from sqlalchemy.orm import joinedload
 
 from warehouse.cache.origin import origin_cache
 from warehouse.packaging.models import Project, Release
-from warehouse.xml import XML_CSP
 
 
 def _format_author(release):
@@ -41,8 +40,6 @@ def _format_author(release):
             return None
         author_emails.append(author_email)
 
-    if not author_emails:
-        return None
     return ", ".join(author_emails)
 
 
@@ -60,8 +57,6 @@ def _format_author(release):
 )
 def rss_updates(request):
     request.response.content_type = "text/xml"
-
-    request.find_service(name="csp").merge(XML_CSP)
 
     latest_releases = (
         request.db.query(Release)
@@ -90,12 +85,10 @@ def rss_updates(request):
 def rss_packages(request):
     request.response.content_type = "text/xml"
 
-    request.find_service(name="csp").merge(XML_CSP)
-
     newest_projects = (
         request.db.query(Project)
         .options(joinedload(Project.releases, innerjoin=True))
-        .order_by(Project.created.desc())
+        .order_by(Project.created.desc().nulls_last())
         .limit(40)
         .all()
     )
@@ -118,8 +111,6 @@ def rss_packages(request):
 )
 def rss_project_releases(project, request):
     request.response.content_type = "text/xml"
-
-    request.find_service(name="csp").merge(XML_CSP)
 
     latest_releases = (
         request.db.query(Release)

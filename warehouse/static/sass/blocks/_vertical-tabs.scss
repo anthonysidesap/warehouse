@@ -19,7 +19,7 @@
     <div class="vertical-tabs__tabs">
       <ul class="vertical-tabs__list">
         <li>
-          <a id="my-tab-id" class="vetical-tabs__tab">
+          <a id="my-tab-id" class="vertical-tabs__tab">
             // Tab
           </a>
         </li>
@@ -34,7 +34,7 @@
       <nav aria-label="label for navigation">
         <ul class="vertical-tabs__list">
           <li>
-            <a id="my-tab-id" class="vetical-tabs__tab vertical-tabs__tab--is-active" aria-selected="true">
+            <a id="my-tab-id" class="vertical-tabs__tab vertical-tabs__tab--is-active" aria-selected="true">
               // Active Tab. Remove --is-active and aria-selected for standard tab
             </a>
           </li>
@@ -60,7 +60,7 @@
       <nav>
         <ul class="vertical-tabs__list" role="tablist">
           <li>
-            <a id="my-tab-id" class="vetical-tabs__tab vertical-tabs__tab--is-active" aria-selected="true" role="tab">
+            <a id="my-tab-id" class="vertical-tabs__tab vertical-tabs__tab--is-active" aria-selected="true" role="tab">
               // Active Tab. Remove --is-active and aria-selected for standard tab
             </a>
           </li>
@@ -69,7 +69,7 @@
     </div>
 
     <div class="vertical-tabs__panel" role="tabpanel" aria-labelledby="my-tab-id my-mofile-tab-id">
-      <a id="my-mobile-tab-id" class="vetical-tabs__tab vertical-tabs__tab--mobile vertical-tabs__tab--is-active" aria-selected="true" role="tab">
+      <a id="my-mobile-tab-id" class="vertical-tabs__tab vertical-tabs__tab--mobile vertical-tabs__tab--is-active" aria-selected="true" role="tab">
         // Duplicate Tab to show on smaller screens
         // Active Tab. Remove --is-active and aria-selected for standard tab
       </a>
@@ -82,6 +82,8 @@
 
 .vertical-tabs {
   @include clearfix;
+  @include grid-container;
+
   margin: $spacing-unit 0;
 
   @media only screen and (max-width: $tablet) {
@@ -95,7 +97,7 @@
   }
 
   &__tabs {
-    @include span-columns(3);
+    grid-column: span 3;
     padding-left: 1px;
 
     @media only screen and (max-width: $tablet) {
@@ -105,12 +107,12 @@
 
   &__tab {
     display: block;
-    padding: $spacing-unit / 2;
+    padding: $half-spacing-unit;
     cursor: pointer;
     @include link-without-underline;
 
     &:hover {
-      color: darken($primary-color, 10)
+      color: darken($primary-color, 10);
     }
 
     &:active,
@@ -145,23 +147,32 @@
     }
 
     &--condensed {
-      padding-top: $spacing-unit / 4;
-      padding-bottom: $spacing-unit / 4;
+      padding-top: $quarter-spacing-unit;
+      padding-bottom: $quarter-spacing-unit;
     }
 
     &--with-icon {
-      i {
+      .fa,
+      .fas,
+      .fab,
+      .far {
+        font-size: 16px;
         width: 20px;
         text-align: center;
         margin-right: 5px;
+      }
+
+      .fa-lg {
+        font-size: 18px;
       }
     }
   }
 
   &__panel {
-    @include span-columns(9);
+    grid-column: span 9;
 
     @media only screen and (max-width: $tablet) {
+      grid-column: span 12;
       width: 100%;
     }
   }
@@ -175,7 +186,7 @@
     }
 
     @media only screen and (max-width: $tablet) {
-      margin: 25px 10px 10px 10px;
+      margin: 25px 10px 10px;
     }
   }
 }

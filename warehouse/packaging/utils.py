@@ -14,12 +14,35 @@ import hashlib
 import os.path
 import tempfile
 
-from packaging.version import parse
+import packaging_legacy.version
+
 from pyramid_jinja2 import IJinja2Environment
 from sqlalchemy.orm import joinedload
 
 from warehouse.packaging.interfaces import ISimpleStorage
-from warehouse.packaging.models import File, Release
+from warehouse.packaging.models import File, LifecycleStatus, Project, Release
+
+API_VERSION = "1.3"
+
+
+def _simple_index(request, serial):
+    # Fetch the name and normalized name for all of our projects
+    projects = (
+        request.db.query(Project.name, Project.normalized_name, Project.last_serial)
+        # Exclude projects that are in the `quarantine-enter` lifecycle status.
+        # Use `is_distinct_from` method here to ensure that we select `NULL` records,
+        # which would otherwise be excluded by the `==` operator.
+        .filter(
+            Project.lifecycle_status.is_distinct_from(LifecycleStatus.QuarantineEnter)
+        )
+        .order_by(Project.normalized_name)
+        .all()
+    )
+
+    return {
+        "meta": {"api-version": API_VERSION, "_last-serial": serial},
+        "projects": [{"name": p.name, "_last-serial": p.last_serial} for p in projects],
+    }
 
 
 def _simple_detail(project, request):
@@ -29,18 +52,77 @@ def _simple_detail(project, request):
         .options(joinedload(File.release))
         .join(Release)
         .filter(Release.project == project)
+        # Exclude projects that are in the `quarantine-enter` lifecycle status.
+        .join(Project)
+        .filter(
+            Project.lifecycle_status.is_distinct_from(LifecycleStatus.QuarantineEnter)
+        )
         .all(),
-        key=lambda f: (parse(f.release.version), f.filename),
+        key=lambda f: (packaging_legacy.version.parse(f.release.version), f.filename),
+    )
+    versions = sorted(
+        {f.release.version for f in files}, key=packaging_legacy.version.parse
+    )
+    alternate_repositories = sorted(
+        alt_repo.url for alt_repo in project.alternate_repositories
     )
 
-    return {"project": project, "files": files}
+    return {
+        "meta": {"api-version": API_VERSION, "_last-serial": project.last_serial},
+        "name": project.normalized_name,
+        "versions": versions,
+        "alternate-locations": alternate_repositories,
+        "files": [
+            {
+                "filename": file.filename,
+                "url": request.route_url("packaging.file", path=file.path),
+                "hashes": {
+                    "sha256": file.sha256_digest,
+                },
+                "requires-python": (
+                    file.release.requires_python
+                    if file.release.requires_python
+                    else None
+                ),
+                "size": file.size,
+                "upload-time": file.upload_time.isoformat() + "Z",
+                "yanked": (
+                    file.release.yanked_reason
+                    if file.release.yanked and file.release.yanked_reason
+                    else file.release.yanked
+                ),
+                "data-dist-info-metadata": (
+                    {"sha256": file.metadata_file_sha256_digest}
+                    if file.metadata_file_sha256_digest
+                    else False
+                ),
+                "core-metadata": (
+                    {"sha256": file.metadata_file_sha256_digest}
+                    if file.metadata_file_sha256_digest
+                    else False
+                ),
+                "provenance": (
+                    request.route_url(
+                        "integrity.provenance",
+                        project_name=project.normalized_name,
+                        release=file.release.version,
+                        filename=file.filename,
+                    )
+                    if file.provenance
+                    else None
+                ),
+            }
+            for file in files
+        ],
+    }
 
 
 def render_simple_detail(project, request, store=False):
     context = _simple_detail(project, request)
+    context = _valid_simple_detail_context(context)
 
     env = request.registry.queryUtility(IJinja2Environment, name=".jinja2")
-    template = env.get_template("templates/legacy/api/simple/detail.html")
+    template = env.get_template("templates/api/simple/detail.html")
     content = template.render(**context, request=request)
 
     content_hasher = hashlib.blake2b(digest_size=256 // 8)
@@ -77,3 +159,8 @@ def render_simple_detail(project, request, store=False):
             )
 
     return (content_hash, simple_detail_path)
+
+
+def _valid_simple_detail_context(context: dict) -> dict:
+    context["alternate_locations"] = context.pop("alternate-locations", [])
+    return context

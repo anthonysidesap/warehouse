@@ -20,13 +20,17 @@ from warehouse.packaging.models import (
     Dependency,
     File,
     JournalEntry,
+    LifecycleStatus,
     Project,
     Release,
     Role,
 )
 from warehouse.utils.project import (
+    PROJECT_NAME_RE,
+    clear_project_quarantine,
     confirm_project,
     destroy_docs,
+    quarantine_project,
     remove_documentation,
     remove_project,
 )
@@ -41,8 +45,20 @@ from ...common.db.packaging import (
 )
 
 
+@pytest.mark.parametrize(
+    "name", ["django", "zope.interface", "Twisted", "foo_bar", "abc123"]
+)
+def test_project_name_re_ok(name: str) -> None:
+    assert PROJECT_NAME_RE.match(name) is not None
+
+
+@pytest.mark.parametrize("name", ["", "foo\n", "foo\nbar", "..."])
+def test_project_name_re_invalid(name: str) -> None:
+    assert PROJECT_NAME_RE.match(name) is None
+
+
 def test_confirm():
-    project = stub(normalized_name="foobar")
+    project = stub(name="foobar", normalized_name="foobar")
     request = stub(
         POST={"confirm_project_name": "foobar"},
         route_path=call_recorder(lambda *a, **kw: stub()),
@@ -56,7 +72,7 @@ def test_confirm():
 
 
 def test_confirm_no_input():
-    project = stub(normalized_name="foobar")
+    project = stub(name="foobar", normalized_name="foobar")
     request = stub(
         POST={"confirm_project_name": ""},
         route_path=call_recorder(lambda *a, **kw: "/the-redirect"),
@@ -72,7 +88,7 @@ def test_confirm_no_input():
 
 
 def test_confirm_incorrect_input():
-    project = stub(normalized_name="foobar")
+    project = stub(name="foobar", normalized_name="foobar")
     request = stub(
         POST={"confirm_project_name": "bizbaz"},
         route_path=call_recorder(lambda *a, **kw: "/the-redirect"),
@@ -90,6 +106,54 @@ def test_confirm_incorrect_input():
             queue="error",
         )
     ]
+
+
+@pytest.mark.parametrize("flash", [True, False])
+def test_quarantine_project(db_request, flash):
+    user = UserFactory.create()
+    project = ProjectFactory.create(name="foo")
+    RoleFactory.create(user=user, project=project)
+
+    db_request.user = user
+    db_request.session = stub(flash=call_recorder(lambda *a, **kw: stub()))
+
+    quarantine_project(project, db_request, flash=flash)
+
+    assert (
+        db_request.db.query(Project).filter(Project.name == project.name).count() == 1
+    )
+    assert (
+        db_request.db.query(Project)
+        .filter(Project.name == project.name)
+        .filter(Project.lifecycle_status == LifecycleStatus.QuarantineEnter)
+        .first()
+    )
+    assert bool(db_request.session.flash.calls) == flash
+
+
+@pytest.mark.parametrize("flash", [True, False])
+def test_clear_project_quarantine(db_request, flash):
+    user = UserFactory.create()
+    project = ProjectFactory.create(
+        name="foo", lifecycle_status=LifecycleStatus.QuarantineEnter
+    )
+    RoleFactory.create(user=user, project=project)
+
+    db_request.user = user
+    db_request.session = stub(flash=call_recorder(lambda *a, **kw: stub()))
+
+    clear_project_quarantine(project, db_request, flash=flash)
+
+    assert (
+        db_request.db.query(Project).filter(Project.name == project.name).count() == 1
+    )
+    assert (
+        db_request.db.query(Project)
+        .filter(Project.name == project.name)
+        .filter(Project.lifecycle_status == LifecycleStatus.QuarantineExit)
+        .first()
+    )
+    assert bool(db_request.session.flash.calls) == flash
 
 
 @pytest.mark.parametrize("flash", [True, False])
@@ -134,19 +198,18 @@ def test_remove_project(db_request, flash):
 
     journal_entry = (
         db_request.db.query(JournalEntry)
-        .options(joinedload("submitted_by"))
+        .options(joinedload(JournalEntry.submitted_by))
         .filter(JournalEntry.name == "foo")
         .one()
     )
     assert journal_entry.action == "remove project"
     assert journal_entry.submitted_by == db_request.user
-    assert journal_entry.submitted_from == db_request.remote_addr
 
 
 @pytest.mark.parametrize("flash", [True, False])
 def test_destroy_docs(db_request, flash):
     user = UserFactory.create()
-    project = ProjectFactory.create(name="foo", has_docs=True)
+    project = ProjectFactory.create(name="Foo", has_docs=True)
     RoleFactory.create(user=user, project=project)
 
     db_request.user = user
@@ -156,16 +219,6 @@ def test_destroy_docs(db_request, flash):
 
     destroy_docs(project, db_request, flash=flash)
 
-    journal_entry = (
-        db_request.db.query(JournalEntry)
-        .options(joinedload("submitted_by"))
-        .filter(JournalEntry.name == "foo")
-        .one()
-    )
-    assert journal_entry.action == "docdestroy"
-    assert journal_entry.submitted_by == db_request.user
-    assert journal_entry.submitted_from == db_request.remote_addr
-
     assert not (
         db_request.db.query(Project)
         .filter(Project.name == project.name)
@@ -173,11 +226,11 @@ def test_destroy_docs(db_request, flash):
         .has_docs
     )
 
-    assert remove_documentation_recorder.delay.calls == [call("foo")]
+    assert remove_documentation_recorder.delay.calls == [call("Foo"), call("foo")]
 
     if flash:
         assert db_request.session.flash.calls == [
-            call("Deleted docs for project 'foo'", queue="success")
+            call("Deleted docs for project 'Foo'", queue="success")
         ]
     else:
         assert db_request.session.flash.calls == []

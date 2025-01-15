@@ -31,7 +31,7 @@ class TestGetFlags:
 
 class TestEditFlag:
     @pytest.mark.parametrize(
-        "description, enabled, post, expected_description, expected_enabled",
+        ("description", "enabled", "post", "expected_description", "expected_enabled"),
         [
             (
                 # Nothing changed when enabled
@@ -92,7 +92,6 @@ class TestEditFlag:
         expected_description,
         expected_enabled,
     ):
-
         # Clear out any existing flags added from migrations
         db_request.db.query(AdminFlag).delete()
 

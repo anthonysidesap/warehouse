@@ -12,18 +12,19 @@
 
 import os
 
+from datetime import timedelta
 from unittest import mock
 
+import orjson
 import pretend
 import pytest
 
 from pyramid import renderers
 from pyramid.authorization import Allow, Authenticated
-from pyramid.httpexceptions import HTTPForbidden, HTTPUnauthorized
 from pyramid.tweens import EXCVIEW
 
 from warehouse import config
-from warehouse.errors import BasicAuthBreachedPassword, BasicAuthFailedPassword
+from warehouse.authnz import Permissions
 from warehouse.utils.wsgi import ProxyFixer, VhmRootRemover
 
 
@@ -74,24 +75,6 @@ class TestRequireHTTPSTween:
 def test_activate_hook(path, expected):
     request = pretend.stub(path=path)
     assert config.activate_hook(request) == expected
-
-
-@pytest.mark.parametrize(
-    ("exc_info", "expected"),
-    [
-        (None, False),
-        ((ValueError, ValueError(), None), True),
-        ((HTTPForbidden, HTTPForbidden(), None), True),
-        ((HTTPUnauthorized, HTTPUnauthorized(), None), True),
-        ((BasicAuthBreachedPassword, BasicAuthBreachedPassword(), None), False),
-        ((BasicAuthFailedPassword, BasicAuthFailedPassword(), None), False),
-    ],
-)
-def test_commit_veto(exc_info, expected):
-    request = pretend.stub(exc_info=exc_info)
-    response = pretend.stub()
-
-    assert bool(config.commit_veto(request, response)) == expected
 
 
 @pytest.mark.parametrize("route_kw", [None, {}, {"foo": "bar"}])
@@ -159,6 +142,89 @@ def test_maybe_set_compound(monkeypatch, environ, base, name, envvar, expected):
 
 
 @pytest.mark.parametrize(
+    ("environ", "coercer", "default", "db", "expected"),
+    [
+        (
+            {"REDIS_URL": "redis://127.0.0.1:6379"},
+            None,
+            None,
+            None,
+            {"test.foo": "redis://127.0.0.1:6379/0"},
+        ),
+        (
+            {"REDIS_URL": "redis://127.0.0.1:6379"},
+            None,
+            None,
+            0,
+            {"test.foo": "redis://127.0.0.1:6379/0"},
+        ),
+        (
+            {"REDIS_URL": "redis://127.0.0.1:6379"},
+            None,
+            None,
+            1,
+            {"test.foo": "redis://127.0.0.1:6379/1"},
+        ),
+        ({}, None, None, None, {}),
+        ({}, None, None, 0, {}),
+        ({}, None, None, 1, {}),
+        (
+            {"REDIS_URL": "redis://127.0.0.1:6379"},
+            str,
+            None,
+            None,
+            {"test.foo": "redis://127.0.0.1:6379/0"},
+        ),
+        (
+            {"REDIS_URL": "redis://127.0.0.1:6379"},
+            str,
+            None,
+            0,
+            {"test.foo": "redis://127.0.0.1:6379/0"},
+        ),
+        (
+            {"REDIS_URL": "redis://127.0.0.1:6379"},
+            str,
+            None,
+            1,
+            {"test.foo": "redis://127.0.0.1:6379/1"},
+        ),
+        ({}, str, None, None, {}),
+        ({}, str, None, 0, {}),
+        (
+            {},
+            str,
+            "redis://127.0.0.1:6379/6",
+            1,
+            {"test.foo": "redis://127.0.0.1:6379/6"},
+        ),
+        (
+            {"REDIS_URL": "redis://127.0.0.1:6379/6"},
+            str,
+            None,
+            9,
+            {"test.foo": "redis://127.0.0.1:6379/9"},
+        ),
+        (
+            {"REDIS_URL": "rediss://foo:bar@example.com:6379/6?fizz=buzz&wu=tang"},
+            str,
+            None,
+            9,
+            {"test.foo": "rediss://foo:bar@example.com:6379/9?fizz=buzz&wu=tang"},
+        ),
+    ],
+)
+def test_maybe_set_redis(monkeypatch, environ, coercer, default, db, expected):
+    for key, value in environ.items():
+        monkeypatch.setenv(key, value)
+    settings = {}
+    config.maybe_set_redis(
+        settings, "test.foo", "REDIS_URL", coercer=coercer, default=default, db=db
+    )
+    assert settings == expected
+
+
+@pytest.mark.parametrize(
     ("settings", "environment"),
     [
         (None, config.Environment.production),
@@ -187,6 +253,7 @@ def test_configure(monkeypatch, settings, environment):
                 config.Environment.development: "development",
                 config.Environment.production: "production",
             }[environment],
+            "GCLOUD_SERVICE_JSON": "e30=",
         },
     )
 
@@ -194,6 +261,7 @@ def test_configure(monkeypatch, settings, environment):
         def __init__(self):
             self.settings = {
                 "warehouse.token": "insecure token",
+                "warehouse.ip_salt": "insecure salt",
                 "warehouse.env": environment,
                 "camo.url": "http://camo.example.com/",
                 "pyramid.reload_assets": False,
@@ -222,6 +290,7 @@ def test_configure(monkeypatch, settings, environment):
         whitenoise_add_manifest=pretend.call_recorder(lambda *a, **kw: None),
         scan=pretend.call_recorder(lambda categories, ignore: None),
         commit=pretend.call_recorder(lambda: None),
+        add_view_deriver=pretend.call_recorder(lambda *a, **kw: None),
     )
     configurator_cls = pretend.call_recorder(lambda settings: configurator_obj)
     monkeypatch.setattr(config, "Configurator", configurator_cls)
@@ -243,10 +312,12 @@ def test_configure(monkeypatch, settings, environment):
         "warehouse.commit": "null",
         "site.name": "Warehouse",
         "token.two_factor.max_age": 300,
+        "remember_device.days": 30,
+        "remember_device.seconds": timedelta(days=30).total_seconds(),
+        "token.remember_device.max_age": timedelta(days=30).total_seconds(),
         "token.default.max_age": 21600,
-        "pythondotorg.host": "python.org",
+        "pythondotorg.host": "https://www.python.org",
         "warehouse.xmlrpc.client.ratelimit_string": "3600 per hour",
-        "warehouse.xmlrpc.search.enabled": True,
         "github.token_scanning_meta_api.url": (
             "https://api.github.com/meta/public_keys/token_scanning"
         ),
@@ -254,13 +325,22 @@ def test_configure(monkeypatch, settings, environment):
         "warehouse.account.ip_login_ratelimit_string": "10 per 5 minutes",
         "warehouse.account.global_login_ratelimit_string": "1000 per 5 minutes",
         "warehouse.account.email_add_ratelimit_string": "2 per day",
+        "warehouse.account.verify_email_ratelimit_string": "3 per 6 hours",
+        "warehouse.account.accounts_search_ratelimit_string": "100 per hour",
         "warehouse.account.password_reset_ratelimit_string": "5 per day",
-        "warehouse.manage.oidc.user_registration_ratelimit_string": "20 per day",
-        "warehouse.manage.oidc.ip_registration_ratelimit_string": "20 per day",
-        "warehouse.two_factor_requirement.enabled": False,
-        "warehouse.two_factor_mandate.available": False,
-        "warehouse.two_factor_mandate.enabled": False,
-        "warehouse.oidc.enabled": False,
+        "warehouse.manage.oidc.user_registration_ratelimit_string": "100 per day",
+        "warehouse.manage.oidc.ip_registration_ratelimit_string": "100 per day",
+        "warehouse.packaging.project_create_user_ratelimit_string": "20 per hour",
+        "warehouse.packaging.project_create_ip_ratelimit_string": "40 per hour",
+        "warehouse.search.ratelimit_string": "5 per second",
+        "oidc.backend": "warehouse.oidc.services.OIDCPublisherService",
+        "integrity.backend": "warehouse.attestations.services.IntegrityService",
+        "warehouse.organizations.max_undecided_organization_applications": 3,
+        "reconcile_file_storages.batch_size": 100,
+        "metadata_backfill.batch_size": 500,
+        "gcloud.service_account_info": {},
+        "warehouse.forklift.legacy.MAX_FILESIZE_MIB": 100,
+        "warehouse.forklift.legacy.MAX_PROJECT_SIZE_GIB": 10,
     }
     if environment == config.Environment.development:
         expected_settings.update(
@@ -279,6 +359,7 @@ def test_configure(monkeypatch, settings, environment):
                         "RequestVarsDebugPanel"
                     ),
                     "pyramid_debugtoolbar.panels.renderings.RenderingsDebugPanel",
+                    "pyramid_debugtoolbar.panels.session.SessionDebugPanel",
                     "pyramid_debugtoolbar.panels.logger.LoggingPanel",
                     (
                         "pyramid_debugtoolbar.panels.performance."
@@ -292,6 +373,7 @@ def test_configure(monkeypatch, settings, environment):
                         "IntrospectionDebugPanel"
                     ),
                 ],
+                "livereload.url": "http://localhost:35729",
             }
         )
 
@@ -302,7 +384,9 @@ def test_configure(monkeypatch, settings, environment):
     assert result is configurator_obj
     assert configurator_obj.set_root_factory.calls == [pretend.call(config.RootFactory)]
     assert configurator_obj.add_wsgi_middleware.calls == [
-        pretend.call(ProxyFixer, token="insecure token", num_proxies=1),
+        pretend.call(
+            ProxyFixer, token="insecure token", ip_salt="insecure salt", num_proxies=1
+        ),
         pretend.call(VhmRootRemover),
     ]
     assert configurator_obj.include.calls == (
@@ -339,9 +423,9 @@ def test_configure(monkeypatch, settings, environment):
             pretend.call(".tasks"),
             pretend.call(".rate_limiting"),
             pretend.call(".static"),
-            pretend.call(".policy"),
             pretend.call(".search"),
             pretend.call(".aws"),
+            pretend.call(".b2"),
             pretend.call(".gcloud"),
             pretend.call(".sessions"),
             pretend.call(".cache.http"),
@@ -350,20 +434,27 @@ def test_configure(monkeypatch, settings, environment):
             pretend.call(".accounts"),
             pretend.call(".macaroons"),
             pretend.call(".oidc"),
-            pretend.call(".malware"),
+            pretend.call(".attestations"),
             pretend.call(".manage"),
             pretend.call(".organizations"),
+            pretend.call(".subscriptions"),
             pretend.call(".packaging"),
             pretend.call(".redirects"),
+            pretend.call("pyramid_redirect"),
             pretend.call(".routes"),
             pretend.call(".sponsors"),
             pretend.call(".banners"),
             pretend.call(".admin"),
             pretend.call(".forklift"),
+            pretend.call(".api.config"),
+            pretend.call(".utils.wsgi"),
             pretend.call(".sentry"),
             pretend.call(".csp"),
             pretend.call(".referrer_policy"),
+            pretend.call(".captcha"),
+            pretend.call(".helpdesk"),
             pretend.call(".http"),
+            pretend.call(".utils.row_counter"),
         ]
         + [pretend.call(x) for x in [configurator_settings.get("warehouse.theme")] if x]
         + [pretend.call(".sanity")]
@@ -381,18 +472,20 @@ def test_configure(monkeypatch, settings, environment):
     assert configurator_obj.add_settings.calls == [
         pretend.call({"jinja2.newstyle": True}),
         pretend.call({"jinja2.i18n.domain": "messages"}),
+        pretend.call({"jinja2.lstrip_blocks": True}),
+        pretend.call({"jinja2.trim_blocks": True}),
         pretend.call({"retry.attempts": 3}),
         pretend.call(
             {
                 "tm.manager_hook": mock.ANY,
                 "tm.activate_hook": config.activate_hook,
-                "tm.commit_veto": config.commit_veto,
                 "tm.annotate_user": False,
             }
         ),
+        pretend.call({"pyramid_redirect.structlog": True}),
         pretend.call({"http": {"verify": "/etc/ssl/certs/"}}),
     ]
-    add_settings_dict = configurator_obj.add_settings.calls[3].args[0]
+    add_settings_dict = configurator_obj.add_settings.calls[5].args[0]
     assert add_settings_dict["tm.manager_hook"](pretend.stub()) is transaction_manager
     assert configurator_obj.add_tween.calls == [
         pretend.call("warehouse.config.require_https_tween_factory"),
@@ -440,9 +533,19 @@ def test_configure(monkeypatch, settings, environment):
         pretend.call("json", json_renderer_obj),
         pretend.call("xmlrpc", xmlrpc_renderer_obj),
     ]
+    assert configurator_obj.add_view_deriver.calls == [
+        pretend.call(
+            config.reject_duplicate_post_keys_view,
+            over="rendered_view",
+            under="decorated_view",
+        )
+    ]
 
     assert json_renderer_cls.calls == [
-        pretend.call(sort_keys=True, separators=(",", ":"))
+        pretend.call(
+            serializer=orjson.dumps,
+            option=orjson.OPT_SORT_KEYS | orjson.OPT_APPEND_NEWLINE,
+        )
     ]
 
     assert xmlrpc_renderer_cls.calls == [pretend.call(allow_none=True)]
@@ -451,13 +554,128 @@ def test_configure(monkeypatch, settings, environment):
 def test_root_factory_access_control_list():
     acl = config.RootFactory.__acl__
 
-    assert len(acl) == 5
-    assert acl[0] == (Allow, "group:admins", "admin")
-    assert acl[1] == (Allow, "group:moderators", "moderator")
-    assert acl[2] == (Allow, "group:psf_staff", "psf_staff")
-    assert acl[3] == (
-        Allow,
-        "group:with_admin_dashboard_access",
-        "admin_dashboard_access",
-    )
-    assert acl[4] == (Allow, Authenticated, "manage:user")
+    assert acl == [
+        (
+            Allow,
+            "group:admins",
+            (
+                Permissions.AdminBannerRead,
+                Permissions.AdminBannerWrite,
+                Permissions.AdminDashboardRead,
+                Permissions.AdminDashboardSidebarRead,
+                Permissions.AdminEmailsRead,
+                Permissions.AdminEmailsWrite,
+                Permissions.AdminFlagsRead,
+                Permissions.AdminFlagsWrite,
+                Permissions.AdminIpAddressesRead,
+                Permissions.AdminJournalRead,
+                Permissions.AdminMacaroonsRead,
+                Permissions.AdminMacaroonsWrite,
+                Permissions.AdminObservationsRead,
+                Permissions.AdminObservationsWrite,
+                Permissions.AdminOrganizationsRead,
+                Permissions.AdminOrganizationsWrite,
+                Permissions.AdminProhibitedEmailDomainsRead,
+                Permissions.AdminProhibitedEmailDomainsWrite,
+                Permissions.AdminProhibitedProjectsRead,
+                Permissions.AdminProhibitedProjectsWrite,
+                Permissions.AdminProhibitedUsernameRead,
+                Permissions.AdminProhibitedUsernameWrite,
+                Permissions.AdminProjectsDelete,
+                Permissions.AdminProjectsRead,
+                Permissions.AdminProjectsSetLimit,
+                Permissions.AdminProjectsWrite,
+                Permissions.AdminRoleAdd,
+                Permissions.AdminRoleDelete,
+                Permissions.AdminSponsorsRead,
+                Permissions.AdminUsersRead,
+                Permissions.AdminUsersWrite,
+                Permissions.AdminUsersEmailWrite,
+                Permissions.AdminUsersAccountRecoveryWrite,
+            ),
+        ),
+        (
+            Allow,
+            "group:support",
+            (
+                Permissions.AdminBannerRead,
+                Permissions.AdminDashboardRead,
+                Permissions.AdminDashboardSidebarRead,
+                Permissions.AdminEmailsRead,
+                Permissions.AdminFlagsRead,
+                Permissions.AdminJournalRead,
+                Permissions.AdminObservationsRead,
+                Permissions.AdminObservationsWrite,
+                Permissions.AdminOrganizationsRead,
+                Permissions.AdminProhibitedEmailDomainsRead,
+                Permissions.AdminProhibitedProjectsRead,
+                Permissions.AdminProhibitedUsernameRead,
+                Permissions.AdminProjectsRead,
+                Permissions.AdminProjectsSetLimit,
+                Permissions.AdminRoleAdd,
+                Permissions.AdminRoleDelete,
+                Permissions.AdminSponsorsRead,
+                Permissions.AdminUsersRead,
+                Permissions.AdminUsersEmailWrite,
+                Permissions.AdminUsersAccountRecoveryWrite,
+            ),
+        ),
+        (
+            Allow,
+            "group:moderators",
+            (
+                Permissions.AdminBannerRead,
+                Permissions.AdminDashboardRead,
+                Permissions.AdminDashboardSidebarRead,
+                Permissions.AdminEmailsRead,
+                Permissions.AdminFlagsRead,
+                Permissions.AdminJournalRead,
+                Permissions.AdminObservationsRead,
+                Permissions.AdminObservationsWrite,
+                Permissions.AdminOrganizationsRead,
+                Permissions.AdminProhibitedEmailDomainsRead,
+                Permissions.AdminProhibitedProjectsRead,
+                Permissions.AdminProhibitedUsernameRead,
+                Permissions.AdminProjectsRead,
+                Permissions.AdminProjectsSetLimit,
+                Permissions.AdminRoleAdd,
+                Permissions.AdminRoleDelete,
+                Permissions.AdminSponsorsRead,
+                Permissions.AdminUsersRead,
+            ),
+        ),
+        (
+            Allow,
+            "group:psf_staff",
+            (
+                Permissions.AdminBannerRead,
+                Permissions.AdminBannerWrite,
+                Permissions.AdminDashboardRead,
+                Permissions.AdminSponsorsRead,
+                Permissions.AdminSponsorsWrite,
+            ),
+        ),
+        (
+            Allow,
+            "group:observers",
+            (
+                Permissions.APIEcho,
+                Permissions.APIObservationsAdd,
+            ),
+        ),
+        (
+            Allow,
+            Authenticated,
+            (
+                Permissions.Account2FA,
+                Permissions.AccountAPITokens,
+                Permissions.AccountManage,
+                Permissions.AccountManagePublishing,
+                Permissions.AccountVerifyEmail,
+                Permissions.AccountVerifyOrgRole,
+                Permissions.AccountVerifyProjectRole,
+                Permissions.OrganizationsManage,
+                Permissions.ProjectsRead,
+            ),
+        ),
+    ]

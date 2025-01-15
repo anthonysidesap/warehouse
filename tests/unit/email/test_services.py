@@ -94,6 +94,24 @@ class TestEmailMessage:
             "<html>\n<head></head>\n<body><p>Email HTML Body</p></body>\n</html>\n"
         )
 
+    def test_strips_newlines_from_subject(self, pyramid_config, pyramid_request):
+        subject_renderer = pyramid_config.testing_add_renderer("email/foo/subject.txt")
+        subject_renderer.string_response = "Email Subject\n"
+
+        body_renderer = pyramid_config.testing_add_renderer("email/foo/body.txt")
+        body_renderer.string_response = "Email Body"
+
+        html_renderer = pyramid_config.testing_add_renderer("email/foo/body.html")
+        html_renderer.string_response = "<p>Email HTML Body</p>"
+
+        msg = EmailMessage.from_template(
+            "foo", {"my_var": "my value"}, request=pyramid_request
+        )
+
+        subject_renderer.assert_(my_var="my value")
+
+        assert msg.subject == "Email Subject"
+
 
 @pytest.mark.parametrize("sender_class", [SMTPEmailSender, ConsoleAndSMTPEmailSender])
 class TestSMTPEmailSender:
@@ -154,7 +172,9 @@ class TestConsoleAndSMTPEmailSender:
         service.send(
             "sombody@example.com",
             EmailMessage(
-                subject="a subject", body_text="a body", body_html="a html body"
+                subject="a subject",
+                body_text="a body",
+                body_html="a html body",
             ),
         )
         captured = capsys.readouterr()
@@ -329,7 +349,7 @@ class TestSESEmailSender:
         for address in [to, "somebody_else@example.com"]:
             for subject in [subject, "I do not care about this"]:
                 sender.send(
-                    f"Foobar <{ to }>",
+                    f"Foobar <{address}>",
                     EmailMessage(
                         subject=subject, body_text="This is a plain text body"
                     ),
@@ -344,7 +364,7 @@ class TestSESEmailSender:
             aws_client, sender="DevPyPI <noreply@example.com>", db=db_session
         )
         sender.send(
-            f"Foobar <{ to }>",
+            f"Foobar <{to}>",
             EmailMessage(subject=subject, body_text="This is a plain text body"),
         )
 
