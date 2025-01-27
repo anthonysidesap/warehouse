@@ -136,16 +136,19 @@ const postCredential = async (label, credential, token) => {
       cache: "no-cache",
       body: formData,
       credentials: "same-origin",
-    }
+    },
   );
 
   return await resp.json();
 };
 
-const postAssertion = async (assertion, token) => {
+const postAssertion = async (assertion, token, rememberDevice) => {
   const formData = new FormData();
   formData.set("credential", JSON.stringify(assertion));
   formData.set("csrf_token", token);
+  if (rememberDevice) {
+    formData.set("remember_device", "true");
+  }
 
   const resp = await fetch(
     "/account/webauthn-authenticate/validate" + window.location.search, {
@@ -153,7 +156,7 @@ const postAssertion = async (assertion, token) => {
       cache: "no-cache",
       body: formData,
       credentials: "same-origin",
-    }
+    },
   );
 
   return await resp.json();
@@ -186,7 +189,7 @@ export const ProvisionWebAuthn = () => {
       "/manage/account/webauthn-provision/options", {
         cache: "no-cache",
         credentials: "same-origin",
-      }
+      },
     );
 
     const credentialOptions = await resp.json();
@@ -216,7 +219,7 @@ export const AuthenticateWebAuthn = () => {
       "/account/webauthn-authenticate/options" + window.location.search, {
         cache: "no-cache",
         credentials: "same-origin",
-      }
+      },
     );
 
     const assertionOptions = await resp.json();
@@ -225,13 +228,14 @@ export const AuthenticateWebAuthn = () => {
       return;
     }
 
+    const rememberDevice = document.getElementById("remember_device_webauthn").checked;
     const transformedOptions = transformAssertionOptions(assertionOptions);
     await navigator.credentials.get({
       publicKey: transformedOptions,
     }).then(async (assertion) => {
       const transformedAssertion = transformAssertion(assertion);
 
-      const status = await postAssertion(transformedAssertion, csrfToken);
+      const status = await postAssertion(transformedAssertion, csrfToken, rememberDevice);
       if (status.fail) {
         populateWebAuthnErrorList(status.fail.errors);
         return;

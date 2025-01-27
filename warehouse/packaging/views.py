@@ -10,15 +10,155 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import cast
+
 from natsort import natsorted
+from pypi_attestations import (
+    Attestation,
+    GitHubPublisher,
+    GitLabPublisher,
+    Publisher,
+    TransparencyLogEntry,
+)
 from pyramid.httpexceptions import HTTPMovedPermanently, HTTPNotFound
 from pyramid.view import view_config
-from sqlalchemy.orm.exc import NoResultFound
+from sqlalchemy.exc import NoResultFound
 
 from warehouse.accounts.models import User
+from warehouse.authnz import Permissions
 from warehouse.cache.origin import origin_cache
-from warehouse.packaging.models import File, Project, Release, Role
-from warehouse.utils import readme
+from warehouse.observations.models import ObservationKind
+from warehouse.packaging.forms import SubmitMalwareObservationForm
+from warehouse.packaging.models import Description, File, Project, Release, Role
+
+
+class PEP740AttestationViewer:
+
+    def __init__(self, publisher: Publisher, attestation: Attestation):
+        self.publisher = publisher
+        self.attestation = attestation
+        self.claims = self.attestation.certificate_claims
+
+    def _format_url(self, base_url: str, reference: str) -> str:
+        """Format a URL to create a permalink to a repository.
+
+        Reference can either be a hash or a named revision.
+        """
+        match self.publisher.kind:
+            case "GitHub":
+                return f"{base_url}/tree/{reference}"
+            case "GitLab":
+                reference = reference.removeprefix("refs/heads/")
+                return f"{base_url}/-/tree/{reference}"
+            case _:
+                # Best effort here
+                return f"{base_url}/{reference}"
+
+    # Statement properties
+    @property
+    def statement_type(self) -> str:
+        """The type of the attestation statement."""
+        return self.attestation.statement["_type"]
+
+    @property
+    def predicate_type(self) -> str:
+        """The type of the predicate in the attestation statement."""
+        return self.attestation.statement["predicateType"]
+
+    @property
+    def subject_name(self) -> str:
+        """The name of the subject in the attestation."""
+        return self.attestation.statement["subject"][0]["name"]
+
+    @property
+    def subject_digest(self) -> str:
+        """The SHA256 digest of the subject."""
+        return self.attestation.statement["subject"][0]["digest"]["sha256"]
+
+    @property
+    def transparency_entry(self) -> TransparencyLogEntry:
+        """The first transparency log entry from the verification material."""
+        return self.attestation.verification_material.transparency_entries[0]
+
+    # Certificate properties
+    @property
+    def repository_url(self) -> str:
+        """Source Repository URI."""
+        return self.claims.get("1.3.6.1.4.1.57264.1.12", "")
+
+    @property
+    def workflow_filename(self) -> str:
+        """The filename of the workflow configuration."""
+        match self.publisher.kind:
+            case "GitHub":
+                return cast(GitHubPublisher, self.publisher).workflow
+            case "GitLab":
+                return cast(GitLabPublisher, self.publisher).workflow_filepath
+            case _:
+                return ""
+
+    @property
+    def workflow_url(self) -> str:
+        """Build Config URI with permalink to the exact version used."""
+        repo_url = self.repository_url
+        workflow_url = self.claims.get("1.3.6.1.4.1.57264.1.18", "")
+        workflow_file_path = workflow_url.split("@")[0].replace(repo_url + "/", "")
+        return f"{repo_url}/blob/{self.build_digest}/{workflow_file_path}"
+
+    @property
+    def build_digest(self) -> str:
+        """Build Config Digest."""
+        return self.claims.get("1.3.6.1.4.1.57264.1.19", "")
+
+    @property
+    def issuer(self) -> str:
+        """Issuer of the attestation."""
+        return self.claims.get("1.3.6.1.4.1.57264.1.8", "")
+
+    @property
+    def environment(self) -> str:
+        """Runner Environment."""
+        return self.claims.get("1.3.6.1.4.1.57264.1.11", "")
+
+    @property
+    def source(self) -> str:
+        """Source Repository URI."""
+        return self.claims.get("1.3.6.1.4.1.57264.1.12", "")
+
+    @property
+    def source_digest(self) -> str:
+        """Source Repository Digest."""
+        return self.claims.get("1.3.6.1.4.1.57264.1.13", "")
+
+    @property
+    def source_reference(self) -> str:
+        """Source Repository Reference."""
+        return self.claims.get("1.3.6.1.4.1.57264.1.14", "")
+
+    @property
+    def owner(self) -> str:
+        """Source Repository Owner URI."""
+        return self.claims.get("1.3.6.1.4.1.57264.1.16", "")
+
+    @property
+    def trigger(self) -> str:
+        """Build Trigger."""
+        return self.claims.get("1.3.6.1.4.1.57264.1.20", "")
+
+    @property
+    def access(self) -> str:
+        """Source Repository Visibility At Signing."""
+        return self.claims.get("1.3.6.1.4.1.57264.1.22", "")
+
+    @property
+    def permalink_with_digest(self) -> str:
+        """Construct a permalink using the source digest."""
+        return self._format_url(self.source, self.source_digest)
+
+    @property
+    def permalink_with_reference(self) -> str:
+        """Construct a permalink using the source reference."""
+        return self._format_url(self.source, self.source_reference)
 
 
 @view_config(
@@ -84,16 +224,13 @@ def release_detail(release, request):
     if project.name != request.matchdict.get("name", project.name):
         return HTTPMovedPermanently(request.current_route_path(name=project.name))
 
-    # Grab the rendered description if it exists, and if it doesn't, then we will render
-    # it inline.
-    # TODO: Remove the fallback to rendering inline and only support displaying the
-    #       already rendered content.
-    if release.description.html:
-        description = release.description.html
-    else:
-        description = readme.render(
-            release.description.raw, release.description.content_type
-        )
+    # Grab the rendered description
+    description_html = (
+        request.db.query(Description.html)
+        .filter(Description.id == release.description_id)
+        .one()
+        .html
+    )
 
     # Get all of the maintainers for this project.
     maintainers = [
@@ -117,6 +254,10 @@ def release_detail(release, request):
     # first line only.
     short_license = release.license.split("\n")[0] if release.license else None
 
+    # Truncate the short license if we were unable to shorten it with newlines
+    if short_license and len(short_license) > 100 and short_license == release.license:
+        short_license = short_license[:100] + "..."
+
     if license_classifiers and short_license:
         license = f"{license_classifiers} ({short_license})"
     else:
@@ -137,7 +278,7 @@ def release_detail(release, request):
     return {
         "project": project,
         "release": release,
-        "description": description,
+        "description": description_html,
         "files": sdists + bdists,
         "sdists": sdists,
         "bdists": bdists,
@@ -145,6 +286,8 @@ def release_detail(release, request):
         "all_versions": project.all_versions,
         "maintainers": maintainers,
         "license": license,
+        # Additional function to format the attestations
+        "PEP740AttestationViewer": PEP740AttestationViewer,
     }
 
 
@@ -153,8 +296,64 @@ def release_detail(release, request):
     context=Project,
     renderer="includes/manage-project-button.html",
     uses_session=True,
-    permission="manage:project",
     has_translations=True,
 )
 def edit_project_button(project, request):
     return {"project": project}
+
+
+@view_config(
+    context=Project,
+    has_translations=True,
+    renderer="includes/packaging/submit-malware-report.html",
+    route_name="includes.submit_malware_report",
+    uses_session=True,
+)
+def includes_submit_malware_observation(project, request):
+    return {"project": project}
+
+
+@view_config(
+    context=Project,
+    has_translations=True,
+    permission=Permissions.SubmitMalwareObservation,
+    renderer="packaging/submit-malware-observation.html",
+    require_csrf=True,
+    require_methods=False,
+    route_name="packaging.project.submit_malware_observation",
+    uses_session=True,
+)
+def submit_malware_observation(
+    project,
+    request,
+    _form_class=SubmitMalwareObservationForm,
+):
+    """
+    Allow Authenticated users to submit malware reports (observations) about a project.
+    """
+    form = _form_class(request.GET)
+
+    if request.method == "POST":
+        form = _form_class(request.POST)
+
+        if form.validate():
+            project.record_observation(
+                request=request,
+                kind=ObservationKind.IsMalware,
+                actor=request.user,
+                summary=form.summary.data,
+                payload={
+                    "inspector_url": form.inspector_link.data,
+                    "origin": "web",
+                    "summary": form.summary.data,
+                },
+            )
+            request.session.flash(
+                request._("Your report has been recorded. Thank you for your help."),
+                queue="success",
+            )
+            return HTTPMovedPermanently(
+                request.route_path("packaging.project", name=project.name)
+            )
+
+    return {"form": form, "project": project}

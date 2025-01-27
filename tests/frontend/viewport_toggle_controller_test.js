@@ -13,18 +13,18 @@
 
 /* global expect, beforeEach, describe, it, jest */
 
-import { Application } from "stimulus";
+import { Application } from "@hotwired/stimulus";
 import ViewportToggleController from "../../warehouse/static/js/warehouse/controllers/viewport_toggle_controller";
 
 
 const viewportContent = `
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <div data-controller="viewport-toggle">
-      <button id="switch-to-mobile" class="button button--primary button--switch-to-mobile hidden" data-target="viewport-toggle.switchToMobile" data-action="viewport-toggle#switchToMobile">
+      <button id="switch-to-mobile" class="button button--primary button--switch-to-mobile hidden" data-viewport-toggle-target="switchToMobile" data-action="viewport-toggle#switchToMobile">
         Switch to mobile version
       </button>
       <div class="centered hide-on-desktop">
-          <button id="switch-to-desktop" class="button button--switch-to-desktop hidden" data-target="viewport-toggle.switchToDesktop" data-action="viewport-toggle#switchToDesktop">
+          <button id="switch-to-desktop" class="button button--switch-to-desktop hidden" data-viewport-toggle-target="switchToDesktop" data-action="viewport-toggle#switchToDesktop">
               Desktop version
           </button>
       </div>

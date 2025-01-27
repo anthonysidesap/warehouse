@@ -10,10 +10,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import elasticsearch
+import opensearchpy
 import pretend
 
 from warehouse import search
+from warehouse.rate_limiting import IRateLimiter, RateLimit
 
 from ...common.db.packaging import ProjectFactory, ReleaseFactory
 
@@ -69,7 +70,7 @@ def test_execute_unindex_success(app_config):
     assert "warehouse.search.project_deletes" not in session.info
 
 
-def test_es(monkeypatch):
+def test_opensearch(monkeypatch):
     search_obj = pretend.stub()
     index_obj = pretend.stub(
         document=pretend.call_recorder(lambda d: None),
@@ -84,15 +85,15 @@ def test_es(monkeypatch):
     client = pretend.stub()
     request = pretend.stub(
         registry={
-            "elasticsearch.client": client,
-            "elasticsearch.index": "warehouse",
+            "opensearch.client": client,
+            "opensearch.index": "warehouse",
             "search.doc_types": doc_types,
         }
     )
 
-    es = search.es(request)
+    opensearch = search.opensearch(request)
 
-    assert es is search_obj
+    assert opensearch is search_obj
     assert index_cls.calls == [pretend.call("warehouse", using=client)]
     assert index_obj.document.calls == [pretend.call(d) for d in doc_types]
     assert index_obj.settings.calls == [
@@ -104,25 +105,29 @@ def test_es(monkeypatch):
 def test_includeme(monkeypatch):
     aws4auth_stub = pretend.stub()
     aws4auth = pretend.call_recorder(lambda *a, **kw: aws4auth_stub)
-    es_client = pretend.stub()
-    es_client_init = pretend.call_recorder(lambda *a, **kw: es_client)
+    opensearch_client = pretend.stub()
+    opensearch_client_init = pretend.call_recorder(lambda *a, **kw: opensearch_client)
 
     monkeypatch.setattr(search.requests_aws4auth, "AWS4Auth", aws4auth)
-    monkeypatch.setattr(search.elasticsearch, "Elasticsearch", es_client_init)
+    monkeypatch.setattr(search.opensearchpy, "OpenSearch", opensearch_client_init)
 
     registry = {}
-    es_url = "https://some.url/some-index?aws_auth=1&region=us-east-2"
+    opensearch_url = "https://some.url/some-index?aws_auth=1&region=us-east-2"
     config = pretend.stub(
         registry=pretend.stub(
             settings={
                 "aws.key_id": "AAAAAAAAAAAA",
                 "aws.secret_key": "deadbeefdeadbeefdeadbeef",
-                "elasticsearch.url": es_url,
+                "opensearch.url": opensearch_url,
+                "warehouse.search.ratelimit_string": "10 per second",
             },
             __setitem__=registry.__setitem__,
         ),
         add_request_method=pretend.call_recorder(lambda *a, **kw: None),
         add_periodic_task=pretend.call_recorder(lambda *a, **kw: None),
+        register_service_factory=pretend.call_recorder(
+            lambda factory, iface, name=None: None
+        ),
     )
 
     search.includeme(config)
@@ -130,20 +135,25 @@ def test_includeme(monkeypatch):
     assert aws4auth.calls == [
         pretend.call("AAAAAAAAAAAA", "deadbeefdeadbeefdeadbeef", "us-east-2", "es")
     ]
-    assert len(es_client_init.calls) == 1
-    assert es_client_init.calls[0].kwargs["hosts"] == ["https://some.url"]
-    assert es_client_init.calls[0].kwargs["timeout"] == 2
-    assert es_client_init.calls[0].kwargs["retry_on_timeout"] is False
+    assert len(opensearch_client_init.calls) == 1
+    assert opensearch_client_init.calls[0].kwargs["hosts"] == ["https://some.url"]
+    assert opensearch_client_init.calls[0].kwargs["timeout"] == 0.5
+    assert opensearch_client_init.calls[0].kwargs["retry_on_timeout"] is True
+    assert opensearch_client_init.calls[0].kwargs["max_retries"] == 1
     assert (
-        es_client_init.calls[0].kwargs["connection_class"]
-        == elasticsearch.connection.http_requests.RequestsHttpConnection
+        opensearch_client_init.calls[0].kwargs["connection_class"]
+        == opensearchpy.connection.http_requests.RequestsHttpConnection
     )
-    assert es_client_init.calls[0].kwargs["http_auth"] == aws4auth_stub
+    assert opensearch_client_init.calls[0].kwargs["http_auth"] == aws4auth_stub
 
-    assert registry["elasticsearch.client"] == es_client
-    assert registry["elasticsearch.index"] == "some-index"
-    assert registry["elasticsearch.shards"] == 1
-    assert registry["elasticsearch.replicas"] == 0
+    assert registry["opensearch.client"] == opensearch_client
+    assert registry["opensearch.index"] == "some-index"
+    assert registry["opensearch.shards"] == 1
+    assert registry["opensearch.replicas"] == 0
     assert config.add_request_method.calls == [
-        pretend.call(search.es, name="es", reify=True)
+        pretend.call(search.opensearch, name="opensearch", reify=True)
+    ]
+
+    assert config.register_service_factory.calls == [
+        pretend.call(RateLimit("10 per second"), IRateLimiter, name="search")
     ]

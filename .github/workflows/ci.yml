@@ -4,111 +4,137 @@ on:
     branches:
       - main
   pull_request:
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:  # generally only for the "combine-prs" workflow
 permissions:
   contents: read
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 jobs:
+  build:
+    if: github.repository == 'pypi/warehouse'
+    runs-on: depot-ubuntu-24.04-arm
+    outputs:
+      buildId: ${{ steps.build.outputs.build-id}}
+    permissions:
+      id-token: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Depot CLI
+        uses: depot/setup-action@v1
+      - name: Build image
+        id: build
+        uses: depot/build-push-action@v1
+        with:
+          save: true
+          build-args: |
+            DEVEL=yes
+            CI=yes
+          tags: pypi/warehouse:ci-${{ github.run_id }}
   test:
+    # Time out if our test suite has gotten hung
+    timeout-minutes: 15
+    needs: build
     strategy:
       matrix:
         include:
           - name: Tests
-            command: bin/tests --postgresql-host localhost
-            needs-python: ${{ true }}
-            needs-node: ${{ false }}
+            command: bin/tests --postgresql-host postgres
+            runs_on: depot-ubuntu-24.04-arm-4
           - name: Lint
             command: bin/lint
-            needs-python: ${{ true }}
-            needs-node: ${{ false }}
-          - name: Documentation
-            command: bin/docs
-            needs-python: ${{ true }}
-            needs-node: ${{ false }}
+            runs_on: depot-ubuntu-24.04-arm-4
+          - name: User Documentation
+            command: bin/user-docs
+          - name: Developer Documentation
+            command: bin/dev-docs
           - name: Dependencies
-            command: bin/github-actions-deps
-            needs-python: ${{ true }}
-            needs-node: ${{ false }}
+            command: bin/deps
           - name: Licenses
             command: bin/licenses
-            needs-python: ${{ true }}
-            needs-node: ${{ false }}
           - name: Translations
             command: bin/translations
-            needs-python: ${{ true }}
-            needs-node: ${{ false }}
-          - name: Static Tests
-            command: bin/static_tests
-            needs-python: ${{ false }}
-            needs-node: ${{ true }}
-          - name: Static Lint
-            command: bin/static_lint
-            needs-python: ${{ false }}
-            needs-node: ${{ true }}
-          - name: Static Pipeline
-            command: bin/static_pipeline
-            needs-python: ${{ false }}
-            needs-node: ${{ true }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (matrix.runs_on != null) && matrix.runs_on || 'depot-ubuntu-24.04-arm' }}
+    container:
+      image: registry.depot.dev/rltf7cln5v:${{ needs.build.outputs.buildId }}
+      env:
+        BILLING_BACKEND: warehouse.subscriptions.services.MockStripeBillingService api_base=http://stripe:12111 api_version=2020-08-27
+    permissions:
+      id-token: write
     services:
       postgres:
-        image: postgres:10.1
+        image: ${{ (matrix.name == 'Tests') && 'postgres:16.1' || '' }}
         ports:
           - 5432:5432
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust  # never do this in production!
+          POSTGRES_INITDB_ARGS: '--no-sync --set fsync=off --set full_page_writes=off'
+        # Set health checks to wait until postgres has started
+        options: --health-cmd "pg_isready --username=postgres --dbname=postgres" --health-interval 10s --health-timeout 5s --health-retries 5
+      redis:
+        image: ${{ (matrix.name == 'Tests') && 'redis:7.0' || '' }}
+        ports:
+          - 6379:6379
+      stripe:
+        image: ${{ (matrix.name == 'Tests') && 'stripe/stripe-mock:v0.162.0' || '' }}
+        ports:
+          - 12111:12111
     name: ${{ matrix.name }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v3
-      - name: Install platform dependencies
-        run: |
-          sudo apt -y update
-          sudo apt -y install libcurl4-openssl-dev libssl-dev pkg-config
-      - name: Read .python-version
-        if: ${{ matrix.needs-python }}
-        run: |
-           echo "WAREHOUSE_PYTHON_VERSION=$(<.python-version)" >> $GITHUB_ENV
-      - uses: actions/setup-python@v3
-        if: ${{ matrix.needs-python }}
+        uses: actions/checkout@v4
         with:
-          python-version: ${{ env.WAREHOUSE_PYTHON_VERSION }}
-      - name: Cache Python dependencies
-        if: ${{ matrix.needs-python }}
-        uses: actions/cache@v3
-        env:
-          cache-name: warehouse-cache-pip
+          persist-credentials: false
+      - name: Cache mypy results
+        if: ${{ (matrix.name == 'Lint') }}
+        uses: actions/cache@v4
         with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-${{ github.job }}-${{ env.cache-name }}-${{ hashFiles('requirements.txt', 'requirements/*.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ github.job }}-${{ env.cache-name }}-
-            ${{ runner.os }}-${{ github.job }}-
-            ${{ runner.os }}-
-      - name: Install Python dependencies
-        if: ${{ matrix.needs-python }}
-        run: |
-          pip install -U pip setuptools wheel
-          pip install -r requirements.txt --no-deps
-          pip install -r requirements/dev.txt
-      - uses: actions/setup-node@v3
-        if: ${{ matrix.needs-node }}
-        with:
-          node-version: 14.15.5
-      - name: Cache Node dependencies
-        if: ${{ matrix.needs-node }}
-        uses: actions/cache@v2
-        env:
-          cache-name: warehouse-cache-npm
-        with:
-          path: ~/.npm
-          key: ${{ runner.os }}-build-${{ github.job }}-${{ env.cache-name }}-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-build-${{ github.job }}-${{ env.cache-name }}-
-            ${{ runner.os }}-build-${{ github.job }}-
-            ${{ runner.os }}-build-
-            ${{ runner.os }}-
-      - name: Install Node dependencies
-        if: ${{ matrix.needs-node }}
-        run: npm ci
+          path: |
+              dev/.mypy_cache
+          key: ${{ runner.os }}-mypy-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt', 'requirements/*.txt') }}
       - name: Run ${{ matrix.name }}
         run: ${{ matrix.command }}
+
+  check_db:
+    name: Check Database Consistency
+    needs: build
+    runs-on: depot-ubuntu-24.04-arm
+    continue-on-error: true
+    container:
+      image: registry.depot.dev/rltf7cln5v:${{ needs.build.outputs.buildId }}
+    permissions:
+      id-token: write
+    services:
+      postgres:
+        image: postgres:16.1
+        ports:
+        - 5432:5432
+        env:
+          POSTGRES_DB: warehouse
+          POSTGRES_HOST_AUTH_METHOD: trust  # never do this in production!
+          POSTGRES_INITDB_ARGS: '--no-sync --set fsync=off --set full_page_writes=off'
+        # Set health checks to wait until postgres has started
+        options: --health-cmd "pg_isready --username=postgres --dbname=postgres" --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Dotenv Action
+        # We need to load the environment variables to run the CLI
+        id: dotenv
+        uses: falti/dotenv-action@v1
+        with:
+          path: dev/environment
+          export-variables: true
+          keys-case: upper
+      - name: Check Database
+        run: bin/db-check
+        env:
+          # override the hostname set in `dev/environment`
+          DATABASE_URL: 'postgresql+psycopg://postgres@postgres/warehouse'

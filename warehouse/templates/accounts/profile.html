@@ -27,7 +27,8 @@
     <div class="left-layout__sidebar">
       <div class="author-profile">
         {% set alt = gettext("Avatar for {user} from gravatar.com").format(user=user.name|default(user.username, true)) %}
-        <img src="{{ gravatar(request, user.email, size=225) }}" alt="{{ alt }}" title="{{ alt }}">
+        {% set email = 'hidden@pypi.org' if user.hide_avatar else user.email %}
+        <img src="{{ gravatar(request, email, size=225) }}" alt="{{ alt }}" title="{{ alt }}">
         <div class="author-profile__info">
           {% if user.name %}
           <h1 class="author-profile__name">{{ user.name }}</h1>
@@ -58,6 +59,9 @@
       </div>
     </div>
 
+    {% csi request.route_path("includes.administer-user-include", user_name=user.username) %}
+    {% endcsi %}
+
     <div class="left-layout__main">
       <h2>
         {% if projects %}
@@ -76,9 +80,9 @@
         <a class="package-snippet" href="{{ request.route_path('packaging.project', name=project.normalized_name) }}">
           <h3 class="package-snippet__title">{{ project.name }}</h3>
           <p class="package-snippet__meta">
-            {% trans release_date=humanize(project.releases[0].created) %}Last released {{ release_date }}{% endtrans %}
+            {% trans release_date=humanize(project.created) %}Last released {{ release_date }}{% endtrans %}
           </p>
-          <p class="package-snippet__description">{{ project.releases[0].summary }}</p>
+          <p class="package-snippet__description">{{ project.summary }}</p>
         </a>
         {% endfor %}
         {% else %}

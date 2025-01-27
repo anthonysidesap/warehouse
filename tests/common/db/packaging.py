@@ -12,12 +12,15 @@
 
 import datetime
 import hashlib
+import random
 
 import factory
 import faker
 import packaging.utils
 
+from warehouse.observations.models import ObservationKind
 from warehouse.packaging.models import (
+    AlternateRepository,
     Dependency,
     DependencyKind,
     Description,
@@ -25,6 +28,7 @@ from warehouse.packaging.models import (
     JournalEntry,
     ProhibitedProjectName,
     Project,
+    Provenance,
     Release,
     Role,
     RoleInvitation,
@@ -33,6 +37,7 @@ from warehouse.utils import readme
 
 from .accounts import UserFactory
 from .base import WarehouseFactory
+from .observations import ObserverFactory
 
 fake = faker.Faker()
 
@@ -43,6 +48,9 @@ class ProjectFactory(WarehouseFactory):
 
     id = factory.Faker("uuid4", cast_to=None)
     name = factory.Faker("pystr", max_chars=12)
+    normalized_name = factory.LazyAttribute(
+        lambda o: packaging.utils.canonicalize_name(o.name)
+    )
 
 
 class ProjectEventFactory(WarehouseFactory):
@@ -50,6 +58,22 @@ class ProjectEventFactory(WarehouseFactory):
         model = Project.Event
 
     source = factory.SubFactory(ProjectFactory)
+
+
+class ProjectObservationFactory(WarehouseFactory):
+    class Meta:
+        model = Project.Observation
+
+    related = factory.SubFactory(ProjectFactory)
+    related_name = factory.LazyAttribute(lambda o: repr(o.related))
+    observer = factory.SubFactory(ObserverFactory)
+
+    kind = factory.Faker(
+        "random_element", elements=[kind.value[1] for kind in ObservationKind]
+    )
+    payload = factory.Faker("json")
+    # TODO: add `observer` field
+    summary = factory.Faker("paragraph")
 
 
 class DescriptionFactory(WarehouseFactory):
@@ -108,6 +132,31 @@ class FileFactory(WarehouseFactory):
             ]
         )
     )
+    size = factory.Faker("pyint")
+    packagetype = factory.LazyAttribute(
+        lambda _: random.choice(
+            [
+                "bdist_wheel",
+                "sdist",
+            ]
+        )
+    )
+
+
+class ProvenanceFactory(WarehouseFactory):
+    class Meta:
+        model = Provenance
+
+    file = factory.SubFactory(FileFactory)
+    provenance = factory.Faker("json")
+
+
+class FileEventFactory(WarehouseFactory):
+    class Meta:
+        model = File.Event
+
+    source = factory.SubFactory(FileFactory)
+    additional = {"publisher_url": None}
 
 
 class RoleFactory(WarehouseFactory):
@@ -144,7 +193,6 @@ class JournalEntryFactory(WarehouseFactory):
     class Meta:
         model = JournalEntry
 
-    id = factory.Sequence(lambda n: n)
     name = factory.Faker("word")
     version = factory.Sequence(lambda n: str(n) + ".0")
     submitted_date = factory.Faker(
@@ -162,3 +210,13 @@ class ProhibitedProjectFactory(WarehouseFactory):
     )
     name = factory.Faker("pystr", max_chars=12)
     prohibited_by = factory.SubFactory(UserFactory)
+
+
+class AlternateRepositoryFactory(WarehouseFactory):
+    class Meta:
+        model = AlternateRepository
+
+    name = factory.Faker("word")
+    url = factory.Faker("uri")
+    description = factory.Faker("text")
+    project = factory.SubFactory(ProjectFactory)

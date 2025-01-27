@@ -5,6 +5,7 @@ compile-pot:
 	PYTHONPATH=$(PWD) pybabel extract \
 		-F babel.cfg \
 		--omit-header \
+		--ignore-dirs='.* _* *dist*' 'warehouse/migrations/' \
 		--output="warehouse/locale/messages.pot" \
 		warehouse
 
@@ -39,7 +40,7 @@ build-mos: compile-pot
 translations: compile-pot
 ifneq ($(GITHUB_ACTIONS), false)
 	cd ../../; \
-	git diff --quiet ./warehouse/locale/messages.pot || (echo "There are outstanding translations, run 'make translations' and commit the changes."; exit 1)
+	cmp -s ./warehouse/locale/messages.pot /opt/warehouse/src/warehouse/locale/messages.pot || (echo "There are outstanding translations, run 'make translations' and commit the changes."; exit 1)
 else
 endif
 

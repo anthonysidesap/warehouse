@@ -16,10 +16,12 @@ import functools
 from email.headerregistry import Address
 
 import pytz
+import sentry_sdk
 
 from celery.schedules import crontab
-from first import first
-from sqlalchemy.orm.exc import NoResultFound
+from more_itertools import first_true
+from pyramid_mailer.exceptions import BadHeaders, EncodingError, InvalidMessage
+from sqlalchemy.exc import NoResultFound
 
 from warehouse import tasks
 from warehouse.accounts.interfaces import ITokenService, IUserService
@@ -27,12 +29,16 @@ from warehouse.accounts.models import Email
 from warehouse.email.interfaces import IEmailSender
 from warehouse.email.services import EmailMessage
 from warehouse.email.ses.tasks import cleanup as ses_cleanup
+from warehouse.events.tags import EventTag
+from warehouse.metrics.interfaces import IMetricsService
 
 
 def _compute_recipient(user, email):
     # We want to try and use the user's name, then their username, and finally
     # nothing to display a "Friendly" name for the recipient.
-    return str(Address(first([user.name, user.username], default=""), addr_spec=email))
+    return str(
+        Address(first_true([user.name, user.username], default=""), addr_spec=email)
+    )
 
 
 def _redact_ip(request, email):
@@ -47,10 +53,13 @@ def _redact_ip(request, email):
         # The email might have been deleted if this is an account deletion event
         return False
 
-    if request.unauthenticated_userid:
-        return user_email.user_id != request.unauthenticated_userid
+    if request._unauthenticated_userid:
+        return user_email.user_id != request._unauthenticated_userid
     if request.user:
         return user_email.user_id != request.user.id
+    if request.remote_addr == "127.0.0.1":
+        # This is the IP used when synthesizing a request in a task
+        return True
     return False
 
 
@@ -61,10 +70,16 @@ def send_email(task, request, recipient, msg, success_event):
 
     try:
         sender.send(recipient, msg)
-
         user_service = request.find_service(IUserService, context=None)
-        user_service.record_event(**success_event)
+        user = user_service.get_user(success_event.pop("user_id"))
+        success_event["request"] = request
+        if user is not None:  # We send account deletion confirmation emails
+            user.record_event(**success_event)
+    except (BadHeaders, EncodingError, InvalidMessage) as exc:
+        raise exc
     except Exception as exc:
+        # Send any other exception to Sentry, but don't re-raise it
+        sentry_sdk.capture_exception(exc)
         task.retry(exc=exc)
 
 
@@ -76,6 +91,7 @@ def _send_email_to_user(
     email=None,
     allow_unverified=False,
     repeat_window=None,
+    override_from=None,
 ):
     # If we were not given a specific email object, then we'll default to using
     # the User's primary email address.
@@ -102,12 +118,17 @@ def _send_email_to_user(
             "subject": msg.subject,
             "body_text": msg.body_text,
             "body_html": msg.body_html,
+            "sender": override_from,
         },
         {
-            "tag": "account:email:sent",
+            "tag": EventTag.Account.EmailSent,
             "user_id": user.id,
             "additional": {
-                "from_": request.registry.settings.get("mail.sender"),
+                "from_": (
+                    request.registry.settings.get("mail.sender")
+                    if override_from is None
+                    else override_from
+                ),
                 "to": email.email,
                 "subject": msg.subject,
                 "redact_ip": _redact_ip(request, email.email),
@@ -121,6 +142,7 @@ def _email(
     *,
     allow_unverified=False,
     repeat_window=None,
+    override_from=None,
 ):
     """
     This decorator is used to turn an e function into an email sending function!
@@ -177,6 +199,20 @@ def _email(
                     email=email,
                     allow_unverified=allow_unverified,
                     repeat_window=repeat_window,
+                    override_from=override_from,
+                )
+                metrics = request.find_service(IMetricsService, context=None)
+                metrics.increment(
+                    "warehouse.emails.scheduled",
+                    tags=[
+                        f"template_name:{name}",
+                        f"allow_unverified:{allow_unverified}",
+                        (
+                            f"repeat_window:{repeat_window.total_seconds()}"
+                            if repeat_window
+                            else "repeat_window:none"
+                        ),
+                    ],
                 )
 
             return context
@@ -250,11 +286,11 @@ def send_password_reset_email(request, user_and_email):
         {
             "action": "password-reset",
             "user.id": str(user.id),
-            "user.last_login": str(user.last_login),
+            "user.last_login": str(
+                user.last_login or datetime.datetime.min.replace(tzinfo=pytz.UTC)
+            ),
             "user.password_date": str(
-                user.password_date
-                if user.password_date is not None
-                else datetime.datetime.min.replace(tzinfo=pytz.UTC)
+                user.password_date or datetime.datetime.min.replace(tzinfo=pytz.UTC)
             ),
         }
     )
@@ -279,6 +315,16 @@ def send_email_verification_email(request, user_and_email):
     }
 
 
+@_email("new-email-added")
+def send_new_email_added_email(request, user_and_email, *, new_email_address):
+    user, _ = user_and_email
+
+    return {
+        "username": user.username,
+        "new_email_address": new_email_address,
+    }
+
+
 @_email("password-change")
 def send_password_change_email(request, user):
     return {"username": user.username}
@@ -294,18 +340,31 @@ def send_password_compromised_email_hibp(request, user):
     return {}
 
 
+@_email("password-reset-by-admin", allow_unverified=True)
+def send_password_reset_by_admin_email(request, user):
+    return {}
+
+
 @_email("token-compromised-leak", allow_unverified=True)
 def send_token_compromised_email_leak(request, user, *, public_url, origin):
     return {"username": user.username, "public_url": public_url, "origin": origin}
 
 
 @_email(
-    "basic-auth-with-2fa",
+    "account-recovery-initiated",
     allow_unverified=True,
-    repeat_window=datetime.timedelta(days=1),
+    override_from="support@pypi.org",
 )
-def send_basic_auth_with_two_factor_email(request, user):
-    return {}
+def send_account_recovery_initiated_email(
+    request, user_and_email, *, project_name, support_issue_link, token
+):
+    user, email = user_and_email
+    return {
+        "user": user,
+        "support_issue_link": support_issue_link,
+        "project_name": project_name,
+        "token": token,
+    }
 
 
 @_email("account-deleted")
@@ -345,6 +404,26 @@ def send_new_organization_declined_email(
     return {
         "message": message,
         "organization_name": organization_name,
+    }
+
+
+@_email("organization-project-added")
+def send_organization_project_added_email(
+    request, user, *, organization_name, project_name
+):
+    return {
+        "organization_name": organization_name,
+        "project_name": project_name,
+    }
+
+
+@_email("organization-project-removed")
+def send_organization_project_removed_email(
+    request, user, *, organization_name, project_name
+):
+    return {
+        "organization_name": organization_name,
+        "project_name": project_name,
     }
 
 
@@ -425,10 +504,12 @@ def send_organization_member_invite_declined_email(
     *,
     user,
     organization_name,
+    message,
 ):
     return {
         "username": user.username,
         "organization_name": organization_name,
+        "message": message,
     }
 
 
@@ -546,6 +627,34 @@ def send_role_changed_as_organization_member_email(
     }
 
 
+@_email("organization-updated")
+def send_organization_updated_email(
+    request,
+    user,
+    *,
+    organization_name,
+    organization_display_name,
+    organization_link_url,
+    organization_description,
+    organization_orgtype,
+    previous_organization_display_name,
+    previous_organization_link_url,
+    previous_organization_description,
+    previous_organization_orgtype,
+):
+    return {
+        "organization_name": organization_name,
+        "organization_display_name": organization_display_name,
+        "organization_link_url": organization_link_url,
+        "organization_description": organization_description,
+        "organization_orgtype": organization_orgtype,
+        "previous_organization_display_name": previous_organization_display_name,
+        "previous_organization_link_url": previous_organization_link_url,
+        "previous_organization_description": previous_organization_description,
+        "previous_organization_orgtype": previous_organization_orgtype,
+    }
+
+
 @_email("organization-renamed")
 def send_organization_renamed_email(
     request, user, *, organization_name, previous_organization_name
@@ -560,6 +669,92 @@ def send_organization_renamed_email(
 def send_organization_deleted_email(request, user, *, organization_name):
     return {
         "organization_name": organization_name,
+    }
+
+
+@_email("team-created")
+def send_team_created_email(request, user, *, organization_name, team_name):
+    return {
+        "organization_name": organization_name,
+        "team_name": team_name,
+    }
+
+
+@_email("team-deleted")
+def send_team_deleted_email(request, user, *, organization_name, team_name):
+    return {
+        "organization_name": organization_name,
+        "team_name": team_name,
+    }
+
+
+@_email("team-member-added")
+def send_team_member_added_email(
+    request,
+    email_recipients,
+    *,
+    user,
+    submitter,
+    organization_name,
+    team_name,
+):
+    return {
+        "username": user.username,
+        "submitter": submitter.username,
+        "organization_name": organization_name,
+        "team_name": team_name,
+    }
+
+
+@_email("added-as-team-member")
+def send_added_as_team_member_email(
+    request,
+    user,
+    *,
+    submitter,
+    organization_name,
+    team_name,
+):
+    return {
+        "username": user.username,
+        "submitter": submitter.username,
+        "organization_name": organization_name,
+        "team_name": team_name,
+    }
+
+
+@_email("team-member-removed")
+def send_team_member_removed_email(
+    request,
+    email_recipients,
+    *,
+    user,
+    submitter,
+    organization_name,
+    team_name,
+):
+    return {
+        "username": user.username,
+        "submitter": submitter.username,
+        "organization_name": organization_name,
+        "team_name": team_name,
+    }
+
+
+@_email("removed-as-team-member")
+def send_removed_as_team_member_email(
+    request,
+    user,
+    *,
+    submitter,
+    organization_name,
+    team_name,
+):
+    return {
+        "username": user.username,
+        "submitter": submitter.username,
+        "organization_name": organization_name,
+        "team_name": team_name,
     }
 
 
@@ -640,6 +835,76 @@ def send_role_changed_as_collaborator_email(
     request, user, *, submitter, project_name, role
 ):
     return {
+        "project": project_name,
+        "submitter": submitter.username,
+        "role": role,
+    }
+
+
+@_email("team-collaborator-added")
+def send_team_collaborator_added_email(
+    request, email_recipients, *, team, submitter, project_name, role
+):
+    return {
+        "team_name": team.name,
+        "project": project_name,
+        "submitter": submitter.username,
+        "role": role,
+    }
+
+
+@_email("added-as-team-collaborator")
+def send_added_as_team_collaborator_email(
+    request, email_recipients, *, team, submitter, project_name, role
+):
+    return {
+        "team_name": team.name,
+        "project": project_name,
+        "submitter": submitter.username,
+        "role": role,
+    }
+
+
+@_email("team-collaborator-removed")
+def send_team_collaborator_removed_email(
+    request, email_recipients, *, team, submitter, project_name
+):
+    return {
+        "team_name": team.name,
+        "project": project_name,
+        "submitter": submitter.username,
+    }
+
+
+@_email("removed-as-team-collaborator")
+def send_removed_as_team_collaborator_email(
+    request, email_recipients, *, team, submitter, project_name
+):
+    return {
+        "team_name": team.name,
+        "project": project_name,
+        "submitter": submitter.username,
+    }
+
+
+@_email("team-collaborator-role-changed")
+def send_team_collaborator_role_changed_email(
+    request, email_recipients, *, team, submitter, project_name, role
+):
+    return {
+        "team_name": team.name,
+        "project": project_name,
+        "submitter": submitter.username,
+        "role": role,
+    }
+
+
+@_email("role-changed-as-team-collaborator")
+def send_role_changed_as_team_collaborator_email(
+    request, email_recipients, *, team, submitter, project_name, role
+):
+    return {
+        "team_name": team.name,
         "project": project_name,
         "submitter": submitter.username,
         "role": role,
@@ -762,25 +1027,80 @@ def send_recovery_code_reminder_email(request, user):
     return {"username": user.username}
 
 
-@_email("oidc-provider-added")
-def send_oidc_provider_added_email(request, user, project_name, provider):
+@_email("trusted-publisher-added")
+def send_trusted_publisher_added_email(request, user, project_name, publisher):
     # We use the request's user, since they're the one triggering the action.
     return {
         "username": request.user.username,
         "project_name": project_name,
-        "provider_name": provider.provider_name,
-        "provider_spec": str(provider),
+        "publisher": publisher,
     }
 
 
-@_email("oidc-provider-removed")
-def send_oidc_provider_removed_email(request, user, project_name, provider):
+@_email("trusted-publisher-removed")
+def send_trusted_publisher_removed_email(request, user, project_name, publisher):
     # We use the request's user, since they're the one triggering the action.
     return {
         "username": request.user.username,
         "project_name": project_name,
-        "provider_name": provider.provider_name,
-        "provider_spec": str(provider),
+        "publisher": publisher,
+    }
+
+
+@_email("pending-trusted-publisher-invalidated")
+def send_pending_trusted_publisher_invalidated_email(request, user, project_name):
+    return {
+        "project_name": project_name,
+    }
+
+
+@_email("api-token-used-in-trusted-publisher-project")
+def send_api_token_used_in_trusted_publisher_project_email(
+    request, users, project_name, token_owner_username, token_name
+):
+    return {
+        "token_owner_username": token_owner_username,
+        "project_name": project_name,
+        "token_name": token_name,
+    }
+
+
+@_email("pep625-extension-email")
+def send_pep625_extension_email(request, users, project_name, filename):
+    return {
+        "project_name": project_name,
+        "filename": filename,
+    }
+
+
+@_email("pep625-name-email")
+def send_pep625_name_email(request, users, project_name, filename, normalized_name):
+    return {
+        "project_name": project_name,
+        "filename": filename,
+        "normalized_name": normalized_name,
+    }
+
+
+@_email("pep625-version-email")
+def send_pep625_version_email(
+    request, users, project_name, filename, normalized_version
+):
+    return {
+        "project_name": project_name,
+        "filename": filename,
+        "normalized_version": normalized_version,
+    }
+
+
+@_email("environment-ignored-in-trusted-publisher")
+def send_environment_ignored_in_trusted_publisher_email(
+    request, users, project_name, publisher, environment_name
+):
+    return {
+        "project_name": project_name,
+        "publisher": publisher,
+        "environment_name": environment_name,
     }
 
 

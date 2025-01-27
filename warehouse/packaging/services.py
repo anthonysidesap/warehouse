@@ -10,21 +10,72 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import collections
+import hashlib
+import io
+import json
+import logging
 import os.path
 import shutil
 import warnings
 
+from itertools import chain
+
+import b2sdk.v2.exception
 import botocore.exceptions
 import google.api_core.exceptions
 import google.api_core.retry
 import sentry_sdk
+import stdlib_list
 
+from packaging.utils import canonicalize_name
+from pyramid.httpexceptions import HTTPBadRequest, HTTPConflict, HTTPForbidden
+from sqlalchemy import exists, func
 from zope.interface import implementer
 
-from warehouse.packaging.interfaces import IDocsStorage, IFileStorage, ISimpleStorage
+from warehouse.admin.flags import AdminFlagValue
+from warehouse.email import send_pending_trusted_publisher_invalidated_email
+from warehouse.events.tags import EventTag
+from warehouse.metrics import IMetricsService
+from warehouse.oidc.models import PendingOIDCPublisher
+from warehouse.packaging.interfaces import (
+    IDocsStorage,
+    IFileStorage,
+    IProjectService,
+    ISimpleStorage,
+    ProjectNameUnavailableReason,
+    TooManyProjectsCreated,
+)
+from warehouse.packaging.models import (
+    JournalEntry,
+    ProhibitedProjectName,
+    Project,
+    Role,
+)
+from warehouse.rate_limiting import DummyRateLimiter, IRateLimiter
+from warehouse.utils.exceptions import DevelopmentModeWarning
+from warehouse.utils.project import PROJECT_NAME_RE
+
+logger = logging.getLogger(__name__)
 
 
-class InsecureStorageWarning(UserWarning):
+def _namespace_stdlib_list(module_list):
+    for module_name in module_list:
+        parts = module_name.split(".")
+        for i, part in enumerate(parts):
+            yield ".".join(parts[: i + 1])
+
+
+STDLIB_PROHIBITED = {
+    canonicalize_name(s.rstrip("-_.").lstrip("-_."))
+    for s in chain.from_iterable(
+        _namespace_stdlib_list(stdlib_list.stdlib_list(version))
+        for version in stdlib_list.short_versions
+    )
+}
+
+
+class InsecureStorageWarning(DevelopmentModeWarning):
     pass
 
 
@@ -50,12 +101,23 @@ class GenericLocalBlobStorage:
     def get(self, path):
         return open(os.path.join(self.base, path), "rb")
 
+    def get_metadata(self, path):
+        return json.loads(open(os.path.join(self.base, path + ".meta")).read())
+
+    def get_checksum(self, path):
+        return hashlib.md5(
+            open(os.path.join(self.base, path), "rb").read(), usedforsecurity=False
+        ).hexdigest()
+
     def store(self, path, file_path, *, meta=None):
         destination = os.path.join(self.base, path)
         os.makedirs(os.path.dirname(destination), exist_ok=True)
         with open(destination, "wb") as dest_fp:
             with open(file_path, "rb") as src_fp:
                 dest_fp.write(src_fp.read())
+        if meta is not None:
+            with open(destination + ".meta", "w") as dest_fp:
+                dest_fp.write(json.dumps(meta))
 
 
 @implementer(IFileStorage)
@@ -63,6 +125,13 @@ class LocalFileStorage(GenericLocalBlobStorage):
     @classmethod
     def create_service(cls, context, request):
         return cls(request.registry.settings["files.path"])
+
+
+@implementer(IFileStorage)
+class LocalArchiveFileStorage(GenericLocalBlobStorage):
+    @classmethod
+    def create_service(cls, context, request):
+        return cls(request.registry.settings["archive_files.path"])
 
 
 @implementer(ISimpleStorage)
@@ -101,11 +170,11 @@ class LocalDocsStorage:
 
 
 class GenericBlobStorage:
-    def __init__(self, bucket, *, prefix=None):
+    def __init__(self, bucket, *, prefix: str | None = None):
         self.bucket = bucket
         self.prefix = prefix
 
-    def _get_path(self, path):
+    def _get_path(self, path: str) -> str:
         # If we have a prefix, then prepend it to our path. This will let us
         # store items inside of a sub directory without exposing that to end
         # users.
@@ -115,9 +184,56 @@ class GenericBlobStorage:
         return path
 
 
+class GenericB2BlobStorage(GenericBlobStorage):
+    def get(self, path: str):
+        path = self._get_path(path)
+        try:
+            file_obj = io.BytesIO()
+            downloaded_file = self.bucket.download_file_by_name(path)
+            downloaded_file.save(file_obj)
+            file_obj.seek(0)
+            return file_obj
+        except b2sdk.v2.exception.FileNotPresent:
+            raise FileNotFoundError(f"No such key: {path!r}") from None
+
+    def get_metadata(self, path: str):
+        path = self._get_path(path)
+        try:
+            return self.bucket.get_file_info_by_name(path).file_info
+        except b2sdk.v2.exception.FileNotPresent:
+            raise FileNotFoundError(f"No such key: {path!r}") from None
+
+    def get_checksum(self, path: str):
+        path = self._get_path(path)
+        try:
+            return self.bucket.get_file_info_by_id(
+                self.bucket.get_file_info_by_name(path).id_
+            ).content_md5
+        except b2sdk.v2.exception.FileNotPresent:
+            raise FileNotFoundError(f"No such key: {path!r}") from None
+
+    def store(self, path: str, file_path, *, meta=None):
+        path = self._get_path(path)
+        self.bucket.upload_local_file(
+            local_file=file_path,
+            file_name=path,
+            file_infos=meta,
+        )
+
+
+@implementer(IFileStorage)
+class B2FileStorage(GenericB2BlobStorage):
+    @classmethod
+    def create_service(cls, context, request):
+        b2_api = request.find_service(name="b2.api")
+        bucket = b2_api.get_bucket_by_name(request.registry.settings["files.bucket"])
+        prefix = request.registry.settings.get("files.prefix")
+        return cls(bucket, prefix=prefix)
+
+
 class GenericS3BlobStorage(GenericBlobStorage):
-    def get(self, path):
-        # Note: this is not actually used in production, instead our CDN is
+    def get(self, path: str):
+        # Note: this is not actually used to serve files, instead our CDN is
         # configured to connect directly to our storage bucket. See:
         # https://github.com/python/pypi-infra/blob/master/terraform/file-hosting/vcl/main.vcl
         try:
@@ -125,9 +241,28 @@ class GenericS3BlobStorage(GenericBlobStorage):
         except botocore.exceptions.ClientError as exc:
             if exc.response["Error"]["Code"] != "NoSuchKey":
                 raise
-            raise FileNotFoundError("No such key: {!r}".format(path)) from None
+            raise FileNotFoundError(f"No such key: {path!r}") from None
 
-    def store(self, path, file_path, *, meta=None):
+    def get_metadata(self, path: str):
+        try:
+            return self.bucket.Object(self._get_path(path)).metadata
+        except botocore.exceptions.ClientError as exc:
+            if exc.response["Error"]["Code"] != "NoSuchKey":
+                raise
+            raise FileNotFoundError(f"No such key: {path!r}") from None
+
+    def get_checksum(self, path: str):
+        try:
+            return (
+                self.bucket.Object(self._get_path(path)).e_tag.rstrip('"').lstrip('"')
+            )
+        except botocore.exceptions.ClientError as exc:
+            if exc.response["ResponseMetadata"]["HTTPStatusCode"] != 404:
+                #  https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html#API_HeadObject_RequestBody
+                raise
+            raise FileNotFoundError(f"No such key: {path!r}") from None
+
+    def store(self, path: str, file_path, *, meta=None):
         extra_args = {}
         if meta is not None:
             extra_args["Metadata"] = meta
@@ -145,6 +280,17 @@ class S3FileStorage(GenericS3BlobStorage):
         s3 = session.resource("s3")
         bucket = s3.Bucket(request.registry.settings["files.bucket"])
         prefix = request.registry.settings.get("files.prefix")
+        return cls(bucket, prefix=prefix)
+
+
+@implementer(IFileStorage)
+class S3ArchiveFileStorage(GenericS3BlobStorage):
+    @classmethod
+    def create_service(cls, context, request):
+        session = request.find_service(name="aws.session")
+        s3 = session.resource("s3")
+        bucket = s3.Bucket(request.registry.settings["archive_files.bucket"])
+        prefix = request.registry.settings.get("archive_files.prefix")
         return cls(bucket, prefix=prefix)
 
 
@@ -182,10 +328,16 @@ class S3DocsStorage:
 
 
 class GenericGCSBlobStorage(GenericBlobStorage):
-    def get(self, path):
-        # Note: this is not actually used in production, instead our CDN is
+    def get(self, path: str):
+        # Note: this is not actually used in to serve files, instead our CDN is
         # configured to connect directly to our storage bucket. See:
         # https://github.com/python/pypi-infra/blob/master/terraform/file-hosting/vcl/main.vcl
+        raise NotImplementedError
+
+    def get_metadata(self, path: str):
+        raise NotImplementedError
+
+    def get_checksum(self, path: str):
         raise NotImplementedError
 
     @google.api_core.retry.Retry(
@@ -193,7 +345,7 @@ class GenericGCSBlobStorage(GenericBlobStorage):
             google.api_core.exceptions.ServiceUnavailable
         )
     )
-    def store(self, path, file_path, *, meta=None):
+    def store(self, path: str, file_path, *, meta=None):
         path = self._get_path(path)
         blob = self.bucket.blob(path)
         if meta is not None:
@@ -248,3 +400,220 @@ class GCSSimpleStorage(GenericGCSBlobStorage):
         prefix = request.registry.settings.get("simple.prefix")
 
         return cls(bucket, prefix=prefix)
+
+
+@implementer(IProjectService)
+class ProjectService:
+    def __init__(self, session, metrics=None, ratelimiters=None) -> None:
+        if ratelimiters is None:
+            ratelimiters = {}
+
+        self.db = session
+        self.ratelimiters = collections.defaultdict(DummyRateLimiter, ratelimiters)
+        self._metrics = metrics
+
+    def _check_ratelimits(self, request, creator):
+        # First we want to check if a single IP is exceeding our rate limiter.
+        if request.remote_addr is not None:
+            if not self.ratelimiters["project.create.ip"].test(request.remote_addr):
+                logger.warning("IP failed project create threshold reached.")
+                self._metrics.increment(
+                    "warehouse.project.create.ratelimited",
+                    tags=["ratelimiter:ip"],
+                )
+                raise TooManyProjectsCreated(
+                    resets_in=self.ratelimiters["project.create.ip"].resets_in(
+                        request.remote_addr
+                    )
+                )
+
+        if not self.ratelimiters["project.create.user"].test(creator.id):
+            logger.warning("User failed project create threshold reached.")
+            self._metrics.increment(
+                "warehouse.project.create.ratelimited",
+                tags=["ratelimiter:user"],
+            )
+            raise TooManyProjectsCreated(
+                resets_in=self.ratelimiters["project.create.user"].resets_in(
+                    request.remote_addr
+                )
+            )
+
+    def _hit_ratelimits(self, request, creator):
+        self.ratelimiters["project.create.user"].hit(creator.id)
+        self.ratelimiters["project.create.ip"].hit(request.remote_addr)
+
+    def check_project_name(self, name: str) -> ProjectNameUnavailableReason | None:
+        if not PROJECT_NAME_RE.match(name):
+            return ProjectNameUnavailableReason.Invalid
+
+        # Also check for collisions with Python Standard Library modules.
+        if canonicalize_name(name) in STDLIB_PROHIBITED:
+            return ProjectNameUnavailableReason.Stdlib
+
+        if self.db.query(
+            exists().where(Project.normalized_name == func.normalize_pep426_name(name))
+        ).scalar():
+            return ProjectNameUnavailableReason.AlreadyExists
+
+        if self.db.query(
+            exists().where(
+                ProhibitedProjectName.name == func.normalize_pep426_name(name)
+            )
+        ).scalar():
+            return ProjectNameUnavailableReason.Prohibited
+
+        if self.db.query(
+            exists().where(
+                func.ultranormalize_name(Project.name) == func.ultranormalize_name(name)
+            )
+        ).scalar():
+            return ProjectNameUnavailableReason.TooSimilar
+
+        return None
+
+    def create_project(
+        self, name, creator, request, *, creator_is_owner=True, ratelimited=True
+    ):
+        if ratelimited:
+            self._check_ratelimits(request, creator)
+
+        # Check for AdminFlag set by a PyPI Administrator disabling new project
+        # registration, reasons for this include Spammers, security
+        # vulnerabilities, or just wanting to be lazy and not worry ;)
+        if request.flags.enabled(AdminFlagValue.DISALLOW_NEW_PROJECT_REGISTRATION):
+            raise HTTPForbidden(
+                (
+                    "New project registration temporarily disabled. "
+                    "See {projecthelp} for more information."
+                ).format(projecthelp=request.help_url(_anchor="admin-intervention")),
+            ) from None
+
+        # Verify that the project name is both valid and currently available.
+        match self.check_project_name(name):
+            case ProjectNameUnavailableReason.Invalid:
+                raise HTTPBadRequest(f"The name {name!r} is invalid.")
+            case ProjectNameUnavailableReason.AlreadyExists:
+                # Found existing project with conflicting name.
+                raise HTTPConflict(
+                    (
+                        "The name {name!r} conflicts with an existing project. "
+                        "See {projecthelp} for more information."
+                    ).format(
+                        name=name,
+                        projecthelp=request.help_url(_anchor="project-name"),
+                    ),
+                ) from None
+            case ProjectNameUnavailableReason.Prohibited:
+                raise HTTPBadRequest(
+                    (
+                        "The name {name!r} isn't allowed. "
+                        "See {projecthelp} for more information."
+                    ).format(
+                        name=name,
+                        projecthelp=request.help_url(_anchor="project-name"),
+                    ),
+                ) from None
+            case ProjectNameUnavailableReason.TooSimilar:
+                raise HTTPBadRequest(
+                    (
+                        "The name {name!r} is too similar to an existing project. "
+                        "See {projecthelp} for more information."
+                    ).format(
+                        name=name,
+                        projecthelp=request.help_url(_anchor="project-name"),
+                    ),
+                ) from None
+            case ProjectNameUnavailableReason.Stdlib:
+                raise HTTPBadRequest(
+                    (
+                        "The name {name!r} isn't allowed (conflict with Python "
+                        "Standard Library module name). See "
+                        "{projecthelp} for more information."
+                    ).format(
+                        name=name,
+                        projecthelp=request.help_url(_anchor="project-name"),
+                    ),
+                ) from None
+
+        # The project name is valid: create it and add it
+        project = Project(name=name)
+        self.db.add(project)
+
+        # TODO: This should be handled by some sort of database trigger or a
+        #       SQLAlchemy hook or the like instead of doing it inline in this
+        #       service.
+        self.db.add(
+            JournalEntry(
+                name=project.name,
+                action="create",
+                submitted_by=creator,
+            )
+        )
+        project.record_event(
+            tag=EventTag.Project.ProjectCreate,
+            request=request,
+            additional={"created_by": creator.username},
+        )
+
+        # Mark the creator as the newly created project's owner, if configured.
+        if creator_is_owner:
+            self.db.add(Role(user=creator, project=project, role_name="Owner"))
+            # TODO: This should be handled by some sort of database trigger or a
+            #       SQLAlchemy hook or the like instead of doing it inline in this
+            #       service.
+            self.db.add(
+                JournalEntry(
+                    name=project.name,
+                    action=f"add Owner {creator.username}",
+                    submitted_by=creator,
+                )
+            )
+            project.record_event(
+                tag=EventTag.Project.RoleAdd,
+                request=request,
+                additional={
+                    "submitted_by": creator.username,
+                    "role_name": "Owner",
+                    "target_user": creator.username,
+                },
+            )
+
+        # Remove all pending publishers not owned by the creator.
+        # There might be other pending publishers for the same or similar project
+        # name, which we've now invalidated by creating the project. These would
+        # be disposed of on use, but we explicitly dispose of them here while
+        # also sending emails to their owners.
+        stale_pending_publishers = (
+            request.db.query(PendingOIDCPublisher)
+            .filter(
+                func.ultranormalize_name(PendingOIDCPublisher.project_name)
+                == func.ultranormalize_name(project.name),
+                PendingOIDCPublisher.added_by != creator,
+            )
+            .all()
+        )
+        for stale_publisher in stale_pending_publishers:
+            send_pending_trusted_publisher_invalidated_email(
+                request,
+                stale_publisher.added_by,
+                project_name=stale_publisher.project_name,
+            )
+            request.db.delete(stale_publisher)
+
+        if ratelimited:
+            self._hit_ratelimits(request, creator)
+        return project
+
+
+def project_service_factory(context, request):
+    metrics = request.find_service(IMetricsService, context=None)
+    ratelimiters = {
+        "project.create.user": request.find_service(
+            IRateLimiter, name="project.create.user", context=None
+        ),
+        "project.create.ip": request.find_service(
+            IRateLimiter, name="project.create.ip", context=None
+        ),
+    }
+    return ProjectService(request.db, metrics=metrics, ratelimiters=ratelimiters)

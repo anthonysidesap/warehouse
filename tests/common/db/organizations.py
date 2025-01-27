@@ -17,18 +17,46 @@ import faker
 
 from warehouse.organizations.models import (
     Organization,
+    OrganizationApplication,
     OrganizationInvitation,
     OrganizationNameCatalog,
     OrganizationProject,
     OrganizationRole,
     OrganizationRoleType,
+    OrganizationStripeCustomer,
+    OrganizationStripeSubscription,
+    Team,
+    TeamProjectRole,
+    TeamProjectRoleType,
+    TeamRole,
+    TeamRoleType,
 )
 
 from .accounts import UserFactory
 from .base import WarehouseFactory
 from .packaging import ProjectFactory
+from .subscriptions import StripeCustomerFactory, StripeSubscriptionFactory
 
 fake = faker.Faker()
+
+
+class OrganizationApplicationFactory(WarehouseFactory):
+    class Meta:
+        model = OrganizationApplication
+
+    id = factory.Faker("uuid4", cast_to=None)
+    name = factory.Faker("pystr", max_chars=12)
+    display_name = factory.Faker("word")
+    orgtype = "Community"
+    link_url = factory.Faker("uri")
+    description = factory.Faker("sentence")
+    is_approved = None
+    submitted_by = factory.SubFactory(UserFactory)
+    submitted = factory.Faker(
+        "date_time_between_dates",
+        datetime_start=datetime.datetime(2020, 1, 1),
+        datetime_end=datetime.datetime(2022, 1, 1),
+    )
 
 
 class OrganizationFactory(WarehouseFactory):
@@ -99,6 +127,62 @@ class OrganizationProjectFactory(WarehouseFactory):
         model = OrganizationProject
 
     id = factory.Faker("uuid4", cast_to=None)
-    is_active = True
     organization = factory.SubFactory(OrganizationFactory)
     project = factory.SubFactory(ProjectFactory)
+
+
+class OrganizationStripeSubscriptionFactory(WarehouseFactory):
+    class Meta:
+        model = OrganizationStripeSubscription
+
+    id = factory.Faker("uuid4", cast_to=None)
+    organization = factory.SubFactory(OrganizationFactory)
+    subscription = factory.SubFactory(StripeSubscriptionFactory)
+
+
+class OrganizationStripeCustomerFactory(WarehouseFactory):
+    class Meta:
+        model = OrganizationStripeCustomer
+
+    id = factory.Faker("uuid4", cast_to=None)
+    organization = factory.SubFactory(OrganizationFactory)
+    customer = factory.SubFactory(StripeCustomerFactory)
+
+
+class TeamFactory(WarehouseFactory):
+    class Meta:
+        model = Team
+
+    id = factory.Faker("uuid4", cast_to=None)
+    name = factory.Faker("pystr", max_chars=12)
+    created = factory.Faker(
+        "date_time_between_dates",
+        datetime_start=datetime.datetime(2020, 1, 1),
+        datetime_end=datetime.datetime(2022, 1, 1),
+    )
+    organization = factory.SubFactory(OrganizationFactory)
+
+
+class TeamEventFactory(WarehouseFactory):
+    class Meta:
+        model = Team.Event
+
+    source = factory.SubFactory(TeamFactory)
+
+
+class TeamRoleFactory(WarehouseFactory):
+    class Meta:
+        model = TeamRole
+
+    role_name = TeamRoleType.Member
+    user = factory.SubFactory(UserFactory)
+    team = factory.SubFactory(TeamFactory)
+
+
+class TeamProjectRoleFactory(WarehouseFactory):
+    class Meta:
+        model = TeamProjectRole
+
+    role_name = TeamProjectRoleType.Owner
+    project = factory.SubFactory(ProjectFactory)
+    team = factory.SubFactory(TeamFactory)

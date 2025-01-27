@@ -14,36 +14,43 @@
 import pretend
 import pytest
 
-from pyramid.interfaces import IAuthorizationPolicy, ISecurityPolicy
+from pyramid.authorization import Allow
+from pyramid.interfaces import ISecurityPolicy
 from pyramid.security import Denied
 from zope.interface.verify import verifyClass
 
 from warehouse.accounts.interfaces import IUserService
+from warehouse.accounts.utils import UserContext
+from warehouse.authnz import Permissions
 from warehouse.macaroons import security_policy
 from warehouse.macaroons.interfaces import IMacaroonService
 from warehouse.macaroons.services import InvalidMacaroonError
+from warehouse.oidc.interfaces import SignedClaims
+from warehouse.oidc.utils import PublisherTokenContext
 
 
 @pytest.mark.parametrize(
-    ["auth", "result"],
+    ("auth", "result"),
     [
         (None, None),
         ("notarealtoken", None),
         ("maybeafuturemethod foobar", None),
         ("token foobar", "foobar"),
+        ("bearer foobar", "foobar"),
         ("basic X190b2tlbl9fOmZvb2Jhcg==", "foobar"),  # "__token__:foobar"
     ],
 )
-def test_extract_http_macaroon(auth, result):
+def test_extract_http_macaroon(auth, result, metrics):
     request = pretend.stub(
-        headers=pretend.stub(get=pretend.call_recorder(lambda k: auth))
+        find_service=pretend.call_recorder(lambda *a, **kw: metrics),
+        headers=pretend.stub(get=pretend.call_recorder(lambda k: auth)),
     )
 
     assert security_policy._extract_http_macaroon(request) == result
 
 
 @pytest.mark.parametrize(
-    ["auth", "result"],
+    ("auth", "result"),
     [
         ("notbase64", None),
         ("bm90YXJlYWx0b2tlbg==", None),  # "notarealtoken"
@@ -65,11 +72,8 @@ class TestMacaroonSecurityPolicy:
 
     def test_noops(self):
         policy = security_policy.MacaroonSecurityPolicy()
-        assert policy.authenticated_userid(pretend.stub()) == NotImplemented
-        assert (
-            policy.permits(pretend.stub(), pretend.stub(), pretend.stub())
-            == NotImplemented
-        )
+        with pytest.raises(NotImplementedError):
+            policy.authenticated_userid(pretend.stub())
 
     def test_forget_and_remember(self):
         policy = security_policy.MacaroonSecurityPolicy()
@@ -77,7 +81,7 @@ class TestMacaroonSecurityPolicy:
         assert policy.forget(pretend.stub()) == []
         assert policy.remember(pretend.stub(), pretend.stub()) == []
 
-    def test_identify_no_macaroon(self, monkeypatch):
+    def test_identity_no_http_macaroon(self, monkeypatch):
         policy = security_policy.MacaroonSecurityPolicy()
 
         vary_cb = pretend.stub()
@@ -99,7 +103,7 @@ class TestMacaroonSecurityPolicy:
         assert add_vary_cb.calls == [pretend.call("Authorization")]
         assert request.add_response_callback.calls == [pretend.call(vary_cb)]
 
-    def test_identify_no_userid(self, monkeypatch):
+    def test_identity_no_db_macaroon(self, monkeypatch):
         policy = security_policy.MacaroonSecurityPolicy()
 
         vary_cb = pretend.stub()
@@ -113,11 +117,12 @@ class TestMacaroonSecurityPolicy:
         )
 
         macaroon_service = pretend.stub(
-            find_userid=pretend.call_recorder(lambda m: None)
+            find_from_raw=pretend.call_recorder(pretend.raiser(InvalidMacaroonError)),
         )
+
         request = pretend.stub(
             add_response_callback=pretend.call_recorder(lambda cb: None),
-            find_service=pretend.call_recorder(lambda i, **kw: macaroon_service),
+            find_service=pretend.call_recorder(lambda iface, **kw: macaroon_service),
         )
 
         assert policy.identity(request) is None
@@ -125,12 +130,12 @@ class TestMacaroonSecurityPolicy:
         assert request.find_service.calls == [
             pretend.call(IMacaroonService, context=None),
         ]
-        assert macaroon_service.find_userid.calls == [pretend.call(raw_macaroon)]
+        assert macaroon_service.find_from_raw.calls == [pretend.call(raw_macaroon)]
 
         assert add_vary_cb.calls == [pretend.call("Authorization")]
         assert request.add_response_callback.calls == [pretend.call(vary_cb)]
 
-    def test_identify(self, monkeypatch):
+    def test_identity_disabled_user(self, monkeypatch):
         policy = security_policy.MacaroonSecurityPolicy()
 
         vary_cb = pretend.stub()
@@ -143,74 +148,130 @@ class TestMacaroonSecurityPolicy:
             security_policy, "_extract_http_macaroon", extract_http_macaroon
         )
 
-        userid = pretend.stub()
-        user = pretend.stub()
+        user = pretend.stub(id="deadbeef-dead-beef-deadbeef-dead")
+        macaroon = pretend.stub(user=user, oidc_publisher=None)
         macaroon_service = pretend.stub(
-            find_userid=pretend.call_recorder(lambda m: userid)
+            find_from_raw=pretend.call_recorder(lambda rm: macaroon),
         )
-        user_service = pretend.stub(get_user=pretend.call_recorder(lambda uid: user))
 
-        def find_service(interface, **kw):
-            if interface == IMacaroonService:
-                return macaroon_service
-            else:
-                return user_service
+        user_service = pretend.stub(
+            is_disabled=pretend.call_recorder(lambda user_id: (True, Exception)),
+        )
 
         request = pretend.stub(
             add_response_callback=pretend.call_recorder(lambda cb: None),
-            find_service=pretend.call_recorder(find_service),
+            find_service=pretend.call_recorder(
+                lambda iface, **kw: {
+                    IMacaroonService: macaroon_service,
+                    IUserService: user_service,
+                }[iface]
+            ),
         )
 
-        assert policy.identity(request) is user
+        assert policy.identity(request) is None
         assert extract_http_macaroon.calls == [pretend.call(request)]
         assert request.find_service.calls == [
             pretend.call(IMacaroonService, context=None),
             pretend.call(IUserService, context=None),
         ]
-        assert macaroon_service.find_userid.calls == [pretend.call(raw_macaroon)]
-        assert user_service.get_user.calls == [pretend.call(userid)]
+        assert macaroon_service.find_from_raw.calls == [pretend.call(raw_macaroon)]
+        assert user_service.is_disabled.calls == [
+            pretend.call("deadbeef-dead-beef-deadbeef-dead")
+        ]
 
         assert add_vary_cb.calls == [pretend.call("Authorization")]
         assert request.add_response_callback.calls == [pretend.call(vary_cb)]
 
+    def test_identity_user(self, monkeypatch):
+        policy = security_policy.MacaroonSecurityPolicy()
 
-class TestMacaroonAuthorizationPolicy:
-    def test_verify(self):
-        assert verifyClass(
-            IAuthorizationPolicy, security_policy.MacaroonAuthorizationPolicy
-        )
+        vary_cb = pretend.stub()
+        add_vary_cb = pretend.call_recorder(lambda *v: vary_cb)
+        monkeypatch.setattr(security_policy, "add_vary_callback", add_vary_cb)
 
-    def test_permits_no_active_request(self, monkeypatch):
-        get_current_request = pretend.call_recorder(lambda: None)
-        monkeypatch.setattr(security_policy, "get_current_request", get_current_request)
-
-        backing_policy = pretend.stub(
-            permits=pretend.call_recorder(lambda *a, **kw: pretend.stub())
-        )
-        policy = security_policy.MacaroonAuthorizationPolicy(policy=backing_policy)
-        result = policy.permits(pretend.stub(), pretend.stub(), pretend.stub())
-
-        assert result == Denied("")
-        assert result.s == "There was no active request."
-
-    def test_permits_no_macaroon(self, monkeypatch):
-        request = pretend.stub()
-        get_current_request = pretend.call_recorder(lambda: request)
-        monkeypatch.setattr(security_policy, "get_current_request", get_current_request)
-
-        _extract_http_macaroon = pretend.call_recorder(lambda r: None)
+        raw_macaroon = pretend.stub()
+        extract_http_macaroon = pretend.call_recorder(lambda r: raw_macaroon)
         monkeypatch.setattr(
-            security_policy, "_extract_http_macaroon", _extract_http_macaroon
+            security_policy, "_extract_http_macaroon", extract_http_macaroon
         )
 
-        permits = pretend.stub()
-        backing_policy = pretend.stub(
-            permits=pretend.call_recorder(lambda *a, **kw: permits)
+        user = pretend.stub(id="deadbeef-dead-beef-deadbeef-dead")
+        macaroon = pretend.stub(user=user, oidc_publisher=None)
+        macaroon_service = pretend.stub(
+            find_from_raw=pretend.call_recorder(lambda rm: macaroon),
         )
-        policy = security_policy.MacaroonAuthorizationPolicy(policy=backing_policy)
-        result = policy.permits(pretend.stub(), pretend.stub(), pretend.stub())
 
-        assert result == permits
+        user_service = pretend.stub(
+            is_disabled=pretend.call_recorder(lambda user_id: (False, Exception)),
+        )
+
+        request = pretend.stub(
+            add_response_callback=pretend.call_recorder(lambda cb: None),
+            find_service=pretend.call_recorder(
+                lambda iface, **kw: {
+                    IMacaroonService: macaroon_service,
+                    IUserService: user_service,
+                }[iface]
+            ),
+        )
+
+        assert policy.identity(request) == UserContext(user, macaroon)
+        assert extract_http_macaroon.calls == [pretend.call(request)]
+        assert request.find_service.calls == [
+            pretend.call(IMacaroonService, context=None),
+            pretend.call(IUserService, context=None),
+        ]
+        assert macaroon_service.find_from_raw.calls == [pretend.call(raw_macaroon)]
+        assert user_service.is_disabled.calls == [
+            pretend.call("deadbeef-dead-beef-deadbeef-dead")
+        ]
+
+        assert add_vary_cb.calls == [pretend.call("Authorization")]
+        assert request.add_response_callback.calls == [pretend.call(vary_cb)]
+
+    def test_identity_oidc_publisher(self, monkeypatch):
+        policy = security_policy.MacaroonSecurityPolicy()
+
+        vary_cb = pretend.stub()
+        add_vary_cb = pretend.call_recorder(lambda *v: vary_cb)
+        monkeypatch.setattr(security_policy, "add_vary_callback", add_vary_cb)
+
+        raw_macaroon = pretend.stub()
+        extract_http_macaroon = pretend.call_recorder(lambda r: raw_macaroon)
+        monkeypatch.setattr(
+            security_policy, "_extract_http_macaroon", extract_http_macaroon
+        )
+
+        oidc_publisher = pretend.stub()
+        oidc_additional = {"oidc": {"foo": "bar"}}
+        macaroon = pretend.stub(
+            user=None, oidc_publisher=oidc_publisher, additional=oidc_additional
+        )
+        macaroon_service = pretend.stub(
+            find_from_raw=pretend.call_recorder(lambda rm: macaroon),
+        )
+
+        request = pretend.stub(
+            add_response_callback=pretend.call_recorder(lambda cb: None),
+            find_service=pretend.call_recorder(lambda iface, **kw: macaroon_service),
+        )
+
+        identity = policy.identity(request)
+        assert identity
+        assert identity.publisher is oidc_publisher
+        assert identity == PublisherTokenContext(
+            oidc_publisher, SignedClaims(oidc_additional["oidc"])
+        )
+
+        assert extract_http_macaroon.calls == [pretend.call(request)]
+        assert request.find_service.calls == [
+            pretend.call(IMacaroonService, context=None),
+            pretend.call(IUserService, context=None),
+        ]
+        assert macaroon_service.find_from_raw.calls == [pretend.call(raw_macaroon)]
+
+        assert add_vary_cb.calls == [pretend.call("Authorization")]
+        assert request.add_response_callback.calls == [pretend.call(vary_cb)]
 
     def test_permits_invalid_macaroon(self, monkeypatch):
         macaroon_service = pretend.stub(
@@ -219,91 +280,60 @@ class TestMacaroonAuthorizationPolicy:
         request = pretend.stub(
             find_service=pretend.call_recorder(lambda interface, **kw: macaroon_service)
         )
-        get_current_request = pretend.call_recorder(lambda: request)
-        monkeypatch.setattr(security_policy, "get_current_request", get_current_request)
-
-        _extract_http_macaroon = pretend.call_recorder(lambda r: b"not a real macaroon")
+        _extract_http_macaroon = pretend.call_recorder(lambda r: "not a real macaroon")
         monkeypatch.setattr(
             security_policy, "_extract_http_macaroon", _extract_http_macaroon
         )
 
-        permits = pretend.stub()
-        backing_policy = pretend.stub(
-            permits=pretend.call_recorder(lambda *a, **kw: permits)
-        )
-        policy = security_policy.MacaroonAuthorizationPolicy(policy=backing_policy)
-        result = policy.permits(pretend.stub(), pretend.stub(), pretend.stub())
+        policy = security_policy.MacaroonSecurityPolicy()
+        result = policy.permits(request, pretend.stub(), Permissions.ProjectsUpload)
 
         assert result == Denied("")
-        assert result.s == "Invalid API Token: InvalidMacaroonError('foo')"
+        assert result.s == "Invalid API Token: foo"
 
-    def test_permits_valid_macaroon(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("principals", "expected"), [(["user:5"], True), (["user:1"], False)]
+    )
+    def test_permits_valid_macaroon(self, monkeypatch, principals, expected):
         macaroon_service = pretend.stub(
             verify=pretend.call_recorder(lambda *a: pretend.stub())
         )
         request = pretend.stub(
-            find_service=pretend.call_recorder(lambda interface, **kw: macaroon_service)
+            identity=pretend.stub(__principals__=lambda: principals),
+            find_service=pretend.call_recorder(
+                lambda interface, **kw: macaroon_service
+            ),
         )
-        get_current_request = pretend.call_recorder(lambda: request)
-        monkeypatch.setattr(security_policy, "get_current_request", get_current_request)
-
-        _extract_http_macaroon = pretend.call_recorder(lambda r: b"not a real macaroon")
+        _extract_http_macaroon = pretend.call_recorder(lambda r: "not a real macaroon")
         monkeypatch.setattr(
             security_policy, "_extract_http_macaroon", _extract_http_macaroon
         )
 
-        permits = pretend.stub()
-        backing_policy = pretend.stub(
-            permits=pretend.call_recorder(lambda *a, **kw: permits)
+        context = pretend.stub(
+            __acl__=[(Allow, "user:5", [Permissions.ProjectsUpload])]
         )
-        policy = security_policy.MacaroonAuthorizationPolicy(policy=backing_policy)
-        result = policy.permits(pretend.stub(), pretend.stub(), "upload")
 
-        assert result == permits
+        policy = security_policy.MacaroonSecurityPolicy()
+        result = policy.permits(request, context, Permissions.ProjectsUpload)
+
+        assert bool(result) == expected
 
     @pytest.mark.parametrize(
         "invalid_permission",
-        ["admin", "moderator", "manage:user", "manage:project", "nonexistant"],
+        [Permissions.AccountManage, Permissions.ProjectsWrite, "nonexistent"],
     )
     def test_denies_valid_macaroon_for_incorrect_permission(
         self, monkeypatch, invalid_permission
     ):
-        macaroon_service = pretend.stub(
-            verify=pretend.call_recorder(lambda *a: pretend.stub())
-        )
-        request = pretend.stub(
-            find_service=pretend.call_recorder(lambda interface, **kw: macaroon_service)
-        )
-        get_current_request = pretend.call_recorder(lambda: request)
-        monkeypatch.setattr(security_policy, "get_current_request", get_current_request)
-
-        _extract_http_macaroon = pretend.call_recorder(lambda r: b"not a real macaroon")
+        _extract_http_macaroon = pretend.call_recorder(lambda r: "not a real macaroon")
         monkeypatch.setattr(
             security_policy, "_extract_http_macaroon", _extract_http_macaroon
         )
 
-        permits = pretend.stub()
-        backing_policy = pretend.stub(
-            permits=pretend.call_recorder(lambda *a, **kw: permits)
-        )
-        policy = security_policy.MacaroonAuthorizationPolicy(policy=backing_policy)
+        policy = security_policy.MacaroonSecurityPolicy()
         result = policy.permits(pretend.stub(), pretend.stub(), invalid_permission)
 
         assert result == Denied("")
         assert result.s == (
             f"API tokens are not valid for permission: {invalid_permission}!"
-        )
-
-    def test_principals_allowed_by_permission(self):
-        principals = pretend.stub()
-        backing_policy = pretend.stub(
-            principals_allowed_by_permission=pretend.call_recorder(
-                lambda *a: principals
-            )
-        )
-        policy = security_policy.MacaroonAuthorizationPolicy(policy=backing_policy)
-
-        assert (
-            policy.principals_allowed_by_permission(pretend.stub(), pretend.stub())
-            is principals
         )
